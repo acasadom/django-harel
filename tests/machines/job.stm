@@ -1,0 +1,16 @@
+event Finish {}
+event Fail   {}
+
+machine job {
+  initial Pending
+
+  state Pending {}
+  state Running {}
+
+  final Done    success
+  final Failed  failure
+
+  from Pending to Running
+  from Running to Done   on Finish
+  from Running to Failed on Fail
+}

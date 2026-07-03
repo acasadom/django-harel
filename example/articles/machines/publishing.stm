@@ -1,0 +1,31 @@
+event Submit  {}
+event Approve {}
+event Reject  { note: string }
+event Archive {}
+
+bind {
+  on_in_review = articles.actions.on_in_review
+  on_approved  = articles.actions.on_approved
+  on_published = articles.actions.on_published
+  on_rejected  = articles.actions.on_rejected
+  on_archived  = articles.actions.on_archived
+}
+
+machine publishing {
+  initial Draft
+
+  state Draft    {}
+  state InReview { on enter on_in_review }
+  state Approved { on enter on_approved }
+
+  final Published  success    { on enter on_published }
+  final Rejected   failure    { on enter on_rejected }
+  final Archived   cancelled  { on enter on_archived }
+
+  from Draft    to InReview on Submit
+  from InReview to Approved on Approve
+  from Approved to Published
+  from InReview to Rejected on Reject
+  from Draft    to Archived on Archive
+  from InReview to Archived on Archive
+}
