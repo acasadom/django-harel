@@ -19,6 +19,7 @@ from harel.engine.store.base import (
     DEFAULT_TRACE_MAX,
     OutboxEntry,
     SpawnEntry,
+    Step,
     StoreConflict,
     TimerOp,
     decode_offset,
@@ -184,6 +185,7 @@ class DjangoStore:
         timers: tuple[TimerOp, ...] = (),
         spawns: tuple[tuple[str, str, dict], ...] = (),
         trace: Optional[dict] = None,
+        step: Optional[Step] = None,
     ) -> list[int]:
         old = exe.version
         seqs: list[int] = []
@@ -192,6 +194,8 @@ class DjangoStore:
                 conflict = self._write(exe)
                 if conflict is None:
                     seqs = self._write_effects(exe, emits, processed_event_id, timers, spawns, trace)
+                    if step is not None:
+                        self._signal_on_commit(step, exe)
         except BaseException:
             exe.version = old
             raise
@@ -199,6 +203,15 @@ class DjangoStore:
             self._doom()
             raise conflict
         return seqs
+
+    def _signal_on_commit(self, step: Step, exe: Execution) -> None:
+        """Send the signals for `step` once the transaction holding this commit commits —
+        never for one that rolls back (see `django_harel.signals`)."""
+        from django_harel import signals
+
+        if signals.listened():
+            committed = exe.model_copy(deep=True)
+            transaction.on_commit(lambda: signals.send(step, committed), using=self.using)
 
     def _write_effects(
         self,

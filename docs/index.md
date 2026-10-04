@@ -53,6 +53,7 @@ reference/worker
 reference/store
 reference/transport
 reference/admin
+reference/signals
 reference/settings
 reference/testing
 ```

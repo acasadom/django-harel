@@ -96,7 +96,8 @@ exe = durable_runner().process(checkout_id, Event(kind="Pay", data={"token": tok
 ```
 
 Executions are listed in the Django admin, where you can also suspend, resume, cancel,
-terminate or purge them.
+terminate or purge them. Signals (`step_committed`, `execution_finished`, `execution_failed`)
+tell your code about every committed step — only once its transaction has committed.
 
 ## Example
 
