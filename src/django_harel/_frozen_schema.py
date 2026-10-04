@@ -1,9 +1,11 @@
-"""harel's SQL schema version 1 under the prefix "harel", frozen as harel 0.7 generates it.
+"""harel's SQL schema version 3 under the prefix "harel", frozen as harel 0.8 generates it.
 
 Generated from `harel.engine.schema` (`store_schema` / `transport_schema`) and never edited:
 a migration must create the same tables whatever harel version is installed when it runs.
 `tests/test_schema.py` checks the copy still matches the installed harel.
 """
+
+SCHEMA_VERSION = 3
 
 SQLITE_STORE = (
     "CREATE TABLE IF NOT EXISTS harel_executions (id TEXT PRIMARY KEY, definition_id TEXT NOT NULL, data TEXT NOT NULL, version INTEGER NOT NULL)",
@@ -35,7 +37,8 @@ POSTGRES_TRANSPORT = (
     "CREATE TABLE IF NOT EXISTS harel_transport_messages (seq BIGSERIAL PRIMARY KEY, group_id TEXT NOT NULL, event TEXT NOT NULL)",
     "CREATE INDEX IF NOT EXISTS harel_transport_messages_by_group ON harel_transport_messages (group_id, seq)",
     "CREATE TABLE IF NOT EXISTS harel_transport_groups (group_id TEXT PRIMARY KEY, locked_by TEXT, lock_expiry DOUBLE PRECISION, priority INT NOT NULL DEFAULT 0)",
-    "CREATE INDEX IF NOT EXISTS harel_transport_groups_claimable ON harel_transport_groups (lock_expiry)",
+    "CREATE INDEX IF NOT EXISTS harel_transport_groups_claim_order ON harel_transport_groups ((COALESCE(lock_expiry, 0)), group_id)",
+    "DROP INDEX IF EXISTS harel_transport_groups_claimable",
     "CREATE OR REPLACE FUNCTION harel_claim(p_now double precision, p_lease double precision, p_token text, p_min_priority int DEFAULT 0)\nRETURNS TABLE(group_id text, seq bigint, event text) AS $$\nDECLARE g text;\nBEGIN\n  LOOP\n    UPDATE harel_transport_groups tg SET locked_by = p_token, lock_expiry = p_lease\n    WHERE tg.group_id = (\n      SELECT s.group_id FROM harel_transport_groups s\n      WHERE (s.locked_by IS NULL OR s.lock_expiry < p_now)\n        AND s.priority >= p_min_priority\n      ORDER BY COALESCE(s.lock_expiry, 0) ASC, s.group_id FOR UPDATE SKIP LOCKED LIMIT 1\n    ) RETURNING tg.group_id INTO g;\n    IF g IS NULL THEN RETURN; END IF;\n    RETURN QUERY SELECT m.group_id, m.seq, m.event FROM harel_transport_messages m\n                 WHERE m.group_id = g ORDER BY m.seq LIMIT 1;\n    IF FOUND THEN RETURN; END IF;\n    DELETE FROM harel_transport_groups WHERE harel_transport_groups.group_id = g AND locked_by = p_token;\n  END LOOP;\nEND; $$ LANGUAGE plpgsql",
-    "CREATE OR REPLACE FUNCTION harel_ack(p_group text, p_seq bigint, p_token text, p_now double precision)\nRETURNS void AS $$\nBEGIN\n  IF EXISTS (SELECT 1 FROM harel_transport_groups WHERE group_id = p_group AND locked_by = p_token) THEN\n    DELETE FROM harel_transport_messages WHERE seq = p_seq;\n    IF EXISTS (SELECT 1 FROM harel_transport_messages WHERE group_id = p_group) THEN\n      UPDATE harel_transport_groups SET locked_by = NULL, lock_expiry = p_now\n      WHERE group_id = p_group AND locked_by = p_token;\n    ELSE\n      DELETE FROM harel_transport_groups WHERE group_id = p_group AND locked_by = p_token;\n    END IF;\n  END IF;\nEND; $$ LANGUAGE plpgsql",
+    "CREATE OR REPLACE FUNCTION harel_ack(p_group text, p_seq bigint, p_token text, p_now double precision)\nRETURNS void AS $$\nBEGIN\n  PERFORM 1 FROM harel_transport_groups WHERE group_id = p_group AND locked_by = p_token FOR UPDATE;\n  IF FOUND THEN\n    DELETE FROM harel_transport_messages WHERE seq = p_seq;\n    IF EXISTS (SELECT 1 FROM harel_transport_messages WHERE group_id = p_group) THEN\n      UPDATE harel_transport_groups SET locked_by = NULL, lock_expiry = p_now\n      WHERE group_id = p_group AND locked_by = p_token;\n    ELSE\n      DELETE FROM harel_transport_groups WHERE group_id = p_group AND locked_by = p_token;\n    END IF;\n  END IF;\nEND; $$ LANGUAGE plpgsql",
 )

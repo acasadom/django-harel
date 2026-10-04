@@ -181,3 +181,30 @@ def test_the_runners_come_from_the_settings(settings):
 
     settings.DJANGO_HAREL = {"MACHINES": {"job": "tests/machines/job.stm"}}
     assert set(conf.definitions()) == {"job"}
+
+
+# --- events are checked when they come in --------------------------------------------------------
+
+
+def test_an_incomplete_event_is_refused_before_anything_runs():
+    from harel import EventError
+
+    runner = _durable()
+    exe = runner.create("job")
+    with pytest.raises(EventError):
+        runner.process(exe.id, Event(kind="Fail"))  # Fail { reason: string }
+    assert runner.store.load(exe.id).version == exe.version
+
+    exe = runner.process(exe.id, Event(kind="Fail", data={"reason": "disk full"}))
+    assert exe.outcome == "failure"
+
+
+def test_an_incomplete_event_is_never_queued():
+    from harel import EventError
+
+    runner = _distributed()
+    exe = runner.create("job")
+    queued = _queued()
+    with pytest.raises(EventError):
+        runner.send(exe.id, Event(kind="Fail"))
+    assert _queued() == queued

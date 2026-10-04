@@ -61,7 +61,8 @@ def checkout(request):
 
 The machine, not the view, decides which step comes next and which events each step
 accepts. An event the current state doesn't handle — a `Pay` posted twice, a stale form —
-doesn't move it.
+doesn't move it. One that lacks a field its declaration requires (`Pay` without its `token`)
+raises `harel.EventError` before anything runs.
 
 ## One transaction
 

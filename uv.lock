@@ -178,14 +178,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "django", specifier = ">=5.2" },
-    { name = "harel", specifier = ">=0.7.0" },
+    { name = "harel", specifier = ">=0.8.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "django-ninja" },
     { name = "django-stubs" },
-    { name = "harel", extras = ["lsp"], specifier = ">=0.7.0" },
+    { name = "harel", extras = ["lsp"], specifier = ">=0.8.0" },
     { name = "mypy" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pymysql", specifier = ">=1.2.3" },
@@ -240,7 +240,7 @@ wheels = [
 
 [[package]]
 name = "harel"
-version = "0.7.0"
+version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
@@ -249,9 +249,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/33/ba/fd842fb15fce3f728d45e4e44e26cebb91409adfe1c263500df46f7d3b23/harel-0.7.0.tar.gz", hash = "sha256:a629588d0110ebde7acc4d86c05af9156e8634763973ab5c4bb4e3792d2b33ee", size = 1677640, upload-time = "2026-10-04T14:17:00.366Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cf/34/de8cc3e589fcf1927e0c6bf838f181d606048d0f5c938eb1becf3769ee03/harel-0.8.0.tar.gz", hash = "sha256:b2d50cd662820bffc9ff5fa18c539d3102c32aba26d9afb0d87d587352a63493", size = 1682619, upload-time = "2026-10-04T17:56:58.499Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/03/2bae2dc7358ebf9b82697b7c24014e37fb96fce844732a728e08f0fcb9b9/harel-0.7.0-py3-none-any.whl", hash = "sha256:46c72ab29da4bd035d983d7f278f7b30cf638ba4bc36996f63eb579ed4c3ae7a", size = 304978, upload-time = "2026-10-04T14:16:58.293Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/6e/660f98fd786d493e9020c94de099c9e74cde9d3504496388a2a662478166/harel-0.8.0-py3-none-any.whl", hash = "sha256:acbe929fe30ce02d3c09138f16fe2e36e6ba7827d5bdf832b7b04881a261c789", size = 306092, upload-time = "2026-10-04T17:56:56.824Z" },
 ]
 
 [package.optional-dependencies]

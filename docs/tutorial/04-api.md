@@ -122,6 +122,12 @@ Any string unique to it works — an order number, a Stripe PaymentIntent id. A 
 `create()` with the same id raises `ExecutionAlreadyExists`, which makes "start this workflow
 once" safe to retry.
 
+## Incomplete events
+
+`Reject { note: string }` declares what a `Reject` carries. `send()` checks it: a `Reject`
+without its `note`, or with a number in it, raises `harel.EventError` (a `ValueError`) in the
+view, before anything is queued — answer it as a bad request.
+
 ## Duplicate events
 
 An event sent twice (a webhook retried by its sender, a double click) is processed once if it

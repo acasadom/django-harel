@@ -13,7 +13,9 @@ from django_harel.transport import DjangoTransport
 
 def test_the_frozen_schema_is_harels():
     """When harel changes its schema (SCHEMA_VERSION), django-harel needs a migration to it."""
-    assert harel_schema.SCHEMA_VERSION == 1, "harel's schema moved on: add a migration for it"
+    assert harel_schema.SCHEMA_VERSION == frozen.SCHEMA_VERSION, (
+        "harel's schema moved on: add a migration for it"
+    )
     assert list(frozen.SQLITE_STORE) == harel_schema.store_schema("sqlite")
     assert list(frozen.SQLITE_TRANSPORT) == harel_schema.transport_schema("sqlite")
     assert list(frozen.POSTGRES_STORE) == harel_schema.store_schema("postgres")
@@ -48,6 +50,8 @@ def test_harels_postgres_backends_read_what_django_writes():
         assert transport.claim("native", 30, min_priority=3) is None
         lease = transport.claim("native", 30, min_priority=2)
         assert lease.group_id == "shared" and lease.event.kind == "Go"
+        transport.ack(lease)
+        assert transport.claim("native", 30) is None
     finally:
         store.close()
         transport.close()

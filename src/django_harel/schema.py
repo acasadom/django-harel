@@ -1,5 +1,8 @@
 """The tables django-harel's migrations create: harel's own SQL schema, per database vendor.
 
+harel versions its schema (`harel.engine.schema.SCHEMA_VERSION`); this is version
+`_frozen_schema.SCHEMA_VERSION`. When harel's moves on, a new migration takes it there.
+
 On SQLite and PostgreSQL the schema is harel's, statement for statement (see `_frozen_schema`),
 so harel's native backends can run over the same tables (`create_schema=False`). harel has no
 MySQL backend: on MySQL/MariaDB the tables follow the PostgreSQL layout — the transport keeps
@@ -41,18 +44,10 @@ MYSQL_TRANSPORT = (
     f"INDEX {PREFIX}_transport_messages_by_group (group_id, seq)) {_MYSQL_TABLE}",
     f"CREATE TABLE IF NOT EXISTS {PREFIX}_transport_groups (group_id VARCHAR(255) PRIMARY KEY, "
     f"locked_by VARCHAR(255), lock_expiry DOUBLE, priority INT NOT NULL DEFAULT 0, "
-    f"INDEX {PREFIX}_transport_groups_claimable (lock_expiry), "
+    # claim's order (least recently served first), as harel's PostgreSQL schema indexes it
     f"INDEX {PREFIX}_transport_groups_claim_order ((COALESCE(lock_expiry, 0)), group_id)) {_MYSQL_TABLE}",
 )
 
-# Beyond harel's schema: the claim walks the groups in its own order — least recently served
-# first, `COALESCE(lock_expiry, 0), group_id` — and without an index on that expression it sorts
-# every queued group on each claim, so a claim's cost grows with the backlog. An extra index,
-# which harel's own backends ignore.
-POSTGRES_EXTRA = (
-    f"CREATE INDEX IF NOT EXISTS {PREFIX}_transport_groups_claim_order "
-    f"ON {PREFIX}_transport_groups ((COALESCE(lock_expiry, 0)), group_id)",
-)
 
 TABLES = (
     f"{PREFIX}_executions",
@@ -89,7 +84,7 @@ def create_statements(vendor: str) -> tuple[str, ...]:
     if vendor == "sqlite":
         return frozen.SQLITE_STORE + frozen.SQLITE_TRANSPORT
     if vendor == "postgresql":
-        return frozen.POSTGRES_STORE + frozen.POSTGRES_TRANSPORT + POSTGRES_EXTRA
+        return frozen.POSTGRES_STORE + frozen.POSTGRES_TRANSPORT
     return MYSQL_STORE + MYSQL_TRANSPORT
 
 

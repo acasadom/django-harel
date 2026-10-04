@@ -35,7 +35,7 @@ The rest of the interface is harel's `ExecutionStore` protocol, which the runner
 
 ## Schema
 
-The tables are harel's schema version 1 (`harel.engine.schema`), created by django-harel's
+The tables are harel's schema version 3 (`harel.engine.schema`), created by django-harel's
 migration. On SQLite and PostgreSQL they are the very tables harel's `SqliteStore` and
 `PostgresStore` use (`create_schema=False`). On MySQL they keep the same columns, with
 `VARCHAR` keys and a binary collation so ids are case-sensitive.
