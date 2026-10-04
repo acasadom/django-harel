@@ -1,5 +1,7 @@
 from django.db import models
 
+from django_harel.workflow import Workflow
+
 
 class Stock(models.Model):
     item = models.CharField(max_length=64, primary_key=True)
@@ -25,3 +27,13 @@ class Tick(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["execution_id", "step"], name="tick_once")]
+
+
+class Ticket(models.Model):
+    """Two workflows on one model: one the workers run, started with the row; one the request
+    runs, started by hand."""
+
+    title = models.CharField(max_length=64)
+
+    workflow = Workflow("job", autostart=True)
+    review = Workflow("job", run="request", context=lambda ticket: {"title": ticket.title})

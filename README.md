@@ -50,9 +50,13 @@ runs the event to the end and renders the new state. There is no queue and no wo
 Everything goes through the connection Django already has, so it joins your transactions:
 
 ```python
+class Article(models.Model):
+    ...
+    workflow = Workflow("publishing", autostart=True)
+
+
 with transaction.atomic():
-    article = Article.objects.create(...)
-    distributed_runner().create("publishing", context={"article_id": article.pk})
+    article = Article.objects.create(...)   # its workflow starts with it
 ```
 
 If the block rolls back, the execution and its queued `Start` roll back with the article. No
@@ -84,16 +88,14 @@ python manage.py harel_worker
 ## Use
 
 ```python
-from django_harel import distributed_runner, durable_runner
-from harel.spec.states import Event
+article.workflow.send("Submit")             # background: queued, the worker runs it
+article.workflow.state                      # "InReview"
 
-# background: the worker runs it
-exe = distributed_runner().create("publishing", context={"article_id": article.pk})
-distributed_runner().send(exe.id, Event(kind="Submit"))
-
-# in the request: runs now, in this thread and transaction
-exe = durable_runner().process(checkout_id, Event(kind="Pay", data={"token": token}))
+order.checkout.process("Pay", token=token)  # in the request: runs now, in this transaction
 ```
+
+`Workflow` ties a machine to a model; the runners underneath (`distributed_runner()`,
+`durable_runner()`) work for executions that don't belong to a row.
 
 Executions are listed in the Django admin, where you can also suspend, resume, cancel,
 terminate or purge them. Signals (`step_committed`, `execution_finished`, `execution_failed`)

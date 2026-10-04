@@ -45,7 +45,7 @@ curl -s -X POST http://localhost:8000/api/articles/ \
 ```
 
 ```json
-{"article_id": 1, "execution_id": "article-1", "status": "draft"}
+{"article_id": 1, "execution_id": "articles.article.workflow:1", "status": "draft"}
 ```
 
 The `Article` row, the harel execution and its queued `Start` commit in **one transaction**.

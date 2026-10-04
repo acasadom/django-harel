@@ -16,7 +16,6 @@ class Migration(migrations.Migration):
                 ("status", models.CharField(default="draft", max_length=32)),
                 ("reviewer_note", models.TextField(blank=True, default="")),
                 ("published_at", models.DateTimeField(blank=True, null=True)),
-                ("execution_id", models.CharField(blank=True, max_length=64, null=True)),
             ],
         ),
     ]

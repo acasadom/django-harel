@@ -1,5 +1,7 @@
 from django.db import models
 
+from django_harel import Workflow
+
 
 class Article(models.Model):
     title = models.CharField(max_length=255)
@@ -8,7 +10,9 @@ class Article(models.Model):
     status = models.CharField(max_length=32, default="draft")
     reviewer_note = models.TextField(blank=True, default="")
     published_at = models.DateTimeField(null=True, blank=True)
-    execution_id = models.CharField(max_length=64, null=True, blank=True)
+
+    # its publishing workflow: started with the row, in the transaction that saves it
+    workflow = Workflow("publishing", autostart=True)
 
     class Meta:
         app_label = "articles"

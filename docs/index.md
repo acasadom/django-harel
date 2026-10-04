@@ -48,6 +48,7 @@ tutorial/06-in-the-request
 :maxdepth: 1
 :caption: Reference
 
+reference/workflow
 reference/runners
 reference/worker
 reference/store
