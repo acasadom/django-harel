@@ -1,0 +1,42 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url opts|admin_urlname:'changelist' %}">{{ opts.verbose_name_plural|capfirst }}</a>
+  &rsaquo; Redrive
+</div>
+{% endblock %}
+
+{% block content %}
+<p>
+  Bring these failed executions of <strong>{{ definition_id }}</strong> back to <code>RUNNING</code>,
+  at the state you choose. Fix what failed them first: the machine carries on from that state,
+  with its context as it is.
+</p>
+<ul>
+  {% for execution in executions %}
+  <li><code>{{ execution.id }}</code> — failed in <code>{{ execution.active_path }}</code>: {{ execution.error }}</li>
+  {% endfor %}
+</ul>
+<form method="post">
+  {% csrf_token %}
+  <p>
+    <label for="id_target">Resume at</label>
+    <select name="target" id="id_target">
+      {% for path in targets %}
+      <option value="{{ path }}"{% if path == suggested %} selected{% endif %}>{{ path }}</option>
+      {% endfor %}
+    </select>
+  </p>
+  {% for execution in executions %}
+  <input type="hidden" name="{{ action_checkbox_name }}" value="{{ execution.id }}">
+  {% endfor %}
+  <input type="hidden" name="action" value="redrive">
+  <input type="hidden" name="apply" value="1">
+  <input type="submit" value="Redrive">
+  <a href="{% url opts|admin_urlname:'changelist' %}" class="button cancel-link">Cancel</a>
+</form>
+{% endblock %}
