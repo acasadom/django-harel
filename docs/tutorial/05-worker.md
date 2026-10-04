@@ -92,7 +92,7 @@ Each process runs one event at a time. Run more of them to run more at once — 
 or many. Each execution's events still run one at a time and in order: a worker leases the
 execution's queue while it works on it, and the others take other executions. On PostgreSQL
 and MySQL workers claim in parallel (`SKIP LOCKED`); on SQLite they take turns on its write
-lock.
+lock, so on SQLite run a single worker.
 
 ## Options
 

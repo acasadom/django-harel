@@ -27,8 +27,9 @@ write commits on its own, and an event whose worker died comes back when its lea
 
 ## Scaling
 
-One process runs one event at a time; run more processes for more at once. An execution's
-events run one at a time and in order whatever the number of workers.
+One process runs one event at a time; on PostgreSQL and MySQL, run more processes for more at
+once. On SQLite, run one (see below). An execution's events run one at a time and in order
+whatever the number of workers.
 
 ## Throughput
 
@@ -44,9 +45,18 @@ every action checked to have run exactly once), on a laptop with the servers in 
 | MySQL 8.4 | ~85 | ~45 | ~250 |
 | MySQL 8.4, no binlog, `innodb_flush_log_at_trx_commit=2` | ~100 | ~260 | ~265 |
 
-Take them as orders of magnitude, not promises: Docker's virtual disk makes every commit slow,
-and MySQL, which syncs two logs per commit by default, suffers most from it. On SQLite more
-workers don't help — one writer at a time. A claim costs the same whatever the backlog.
+Take them as orders of magnitude, not promises: the benchmark ran on the host against servers
+in Docker, so every query crossed Docker Desktop's port forwarding, and Docker's virtual disk
+makes every commit slow — MySQL, which syncs two logs per commit by default, suffers most. A
+claim costs the same whatever the backlog.
+
+harel's own PostgreSQL backends, measured the same way, run about 1.6× faster per worker
+(~210 events/s): they fold the claim, the acknowledgement and a plain commit into one call to a
+server-side function each, and don't run the step in one transaction.
+
+**On SQLite, run one worker process.** SQLite has one writer at a time, so more processes add
+no throughput, and its lock isn't fair: with eight, the rate halves. harel measures the same of
+its own SQLite backends.
 
 ## Deployment
 
