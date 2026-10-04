@@ -1,49 +1,29 @@
-# Django Admin
+# Admin
 
-django-harel registers read-only admin views for all internal tables. Add
-`django.contrib.admin` to `INSTALLED_APPS` to enable them.
+With `django.contrib.admin` installed, **Harel › Executions** lists every execution.
 
-## Registered models
+## The list
 
-| Model | Admin class | What you see |
-|---|---|---|
-| `HarelExecution` | `HarelExecutionAdmin` | All running and completed executions with status, active state, version, and parent |
-| `HarelQueue` | `HarelQueueAdmin` | Events currently in the queue, with lock status and expiry |
-| `HarelOutbox` | `HarelOutboxAdmin` | Events pending relay after a commit |
-| `HarelTimer` | `HarelTimerAdmin` | Scheduled timeouts and their fire times |
-| `HarelTrace` | `HarelTraceAdmin` | Execution timeline entries (only populated when `--trace` is on) |
+Each row shows the execution's id, machine, status, outcome, current state, when it last
+changed and its version. Filter by status, by machine, or to root executions only (no
+orthogonal regions or invoked children); search by id.
 
-All admins are **read-only** — no create, edit, or delete from the UI. The statechart
-engine is the only writer; manual edits would corrupt the CAS versioning.
+## The detail page
 
-## HarelExecution list view
+Everything about one execution: status, outcome, state, the error that dead-lettered it,
+its timestamps, parent and children, its context, and its recent steps when tracing is on
+(`DJANGO_HAREL["TRACE"] = True`).
 
-The execution list shows denormalized columns so you can scan and filter without
-expanding the JSON blob:
+Nothing here can be edited: only the machine changes an execution.
 
-- `id` — the execution UUID
-- `definition_id` — which machine this is (e.g. `"publishing"`)
-- `status` — `RUNNING`, `DONE`, `FAILED`, `CANCELLED`
-- `active_path` — the current state name (e.g. `"InReview"`)
-- `version` — how many events have been processed
-- `parent_id` — set for child executions spawned by orthogonal regions
+## Actions
 
-Use the `status` and `definition_id` filters in the sidebar to narrow down executions.
+| Action | |
+|---|---|
+| Suspend / Resume | pause an execution and continue it |
+| Cancel | run the machine's `on Cancel` cleanup (on a worker), or terminate |
+| Terminate | end it now, without cleanup |
+| Purge | delete finished executions and their children; one still running is refused |
 
-## Enabling the admin
-
-```python
-# settings.py
-INSTALLED_APPS = [
-    "django.contrib.admin",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "django.contrib.sessions",
-    "django.contrib.messages",
-    ...
-    "django_harel",
-]
-```
-
-The admin classes are registered automatically when `django_harel` is in
-`INSTALLED_APPS` — no extra configuration needed.
+They are offered to users with the `django_harel.change_harelexecution` permission; the
+`view_harelexecution` permission shows the pages without them.

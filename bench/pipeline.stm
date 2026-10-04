@@ -1,0 +1,20 @@
+# The bench machine: two automatic steps on Start, then a third when Go arrives.
+event Go {}
+
+machine pipeline {
+  context {
+    id: string
+  }
+
+  initial First
+
+  state First  { on enter tests.app.actions.tick(step: "first") }
+  state Second { on enter tests.app.actions.tick(step: "second") }
+  state Waiting {}
+
+  final Done success { on enter tests.app.actions.tick(step: "done") }
+
+  from First   to Second
+  from Second  to Waiting
+  from Waiting to Done on Go
+}

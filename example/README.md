@@ -19,6 +19,7 @@ articles/models.py                 ← Article model
 ```bash
 cd example/
 python manage.py migrate
+python manage.py createsuperuser   # optional: to see the executions in /admin/
 ```
 
 ## Run
@@ -44,11 +45,11 @@ curl -s -X POST http://localhost:8000/api/articles/ \
 ```
 
 ```json
-{"article_id": 1, "execution_id": "...", "status": "draft"}
+{"article_id": 1, "execution_id": "article-1", "status": "draft"}
 ```
 
-The `Article` row and the harel `Execution` are created in **one atomic transaction**.
-The machine starts in `Draft` — no worker tick needed yet.
+The `Article` row, the harel execution and its queued `Start` commit in **one transaction**.
+The execution is `PENDING` until the worker runs its `Start` and takes it to `Draft`.
 
 ### Submit for editorial review
 
@@ -61,14 +62,14 @@ curl -s -X POST http://localhost:8000/api/articles/1/submit
 ```
 
 The API **enqueues** a `Submit` event. Check the status immediately — still `draft`
-because the worker hasn't processed it yet:
+until the worker has processed it:
 
 ```bash
 curl -s http://localhost:8000/api/articles/1
 ```
 
 ```json
-{"article_id": 1, "status": "draft", ...}
+{"article_id": 1, "status": "draft", "workflow": {"status": "RUNNING", "state": "Draft", "outcome": null}, ...}
 ```
 
 After the worker picks it up (watch terminal 2), the machine transitions
@@ -90,7 +91,7 @@ curl -s -X POST http://localhost:8000/api/articles/1/approve
 
 The worker processes `Approve`, transitions `InReview → Approved`, and because
 `Approved → Published` is an **automatic transition** (no event required), both
-`on_approved` and `on_published` run in the same worker tick:
+`on_approved` and `on_published` run in the same step:
 
 ```bash
 curl -s http://localhost:8000/api/articles/1
@@ -100,7 +101,8 @@ curl -s http://localhost:8000/api/articles/1
 {
   "article_id": 1,
   "status": "published",
-  "published_at": "2026-07-03T13:43:49.959Z",
+  "published_at": "2026-10-04T13:43:49.959Z",
+  "workflow": {"status": "DONE", "state": "Published", "outcome": "success"},
   ...
 }
 ```
@@ -133,6 +135,11 @@ curl -s http://localhost:8000/api/articles/2
   "published_at": null
 }
 ```
+
+## The admin
+
+`http://localhost:8000/admin/` → **Harel › Executions** lists every workflow with its state;
+the example records each step (`"TRACE": True`), shown on an execution's page.
 
 ## Interactive API docs
 

@@ -1,106 +1,33 @@
-# Transport
-
-A transport is the queue that carries events between the API (publisher) and the worker
-(consumer). django-harel ships with `DjangoTransport` and supports Redis via harel's
-native `RedisTransport`.
-
-## DjangoTransport (default)
-
-Events are rows in the `harel_queue` table. Zero additional infrastructure — the same
-database you already use for your app.
+# DjangoTransport
 
 ```python
-from django_harel.transport import DjangoTransport
+from django_harel import DjangoTransport
 
-transport = DjangoTransport()
-transport.publish("execution-id", Event(kind="Submit"))
+transport = DjangoTransport(using="default")
 ```
 
-### How claim works
+harel's `Transport` — the queue the workers read — over Django's database, in the tables
+`harel_transport_messages` and `harel_transport_groups`.
 
-`claim()` atomically locks the oldest available event from a group that has no other
-in-flight event (single-active-consumer per execution). It uses a two-step
-SELECT + conditional UPDATE:
+## In the caller's transaction
 
-```sql
--- 1. Find candidate
-SELECT seq, group_id, payload FROM harel_queue
-WHERE available_at <= now
-  AND (locked_by IS NULL OR lock_expiry <= now)
-  AND group_id NOT IN (
-    SELECT group_id FROM (
-      SELECT group_id FROM harel_queue
-      WHERE locked_by IS NOT NULL AND lock_expiry > now
-    ) AS _locked
-  )
-ORDER BY available_at, seq LIMIT 1
+`publish()` writes on the caller's connection, so an event queued inside `atomic()` is sent
+only if the block commits. The transport says so to harel (`shares_store_transaction`), which
+then lets a failed publish reach the caller instead of retrying it later.
 
--- 2. CAS lock
-UPDATE harel_queue SET locked_by = ?, lock_expiry = ?
-WHERE seq = ?
-  AND (locked_by IS NULL OR lock_expiry <= now)
-  AND group_id NOT IN (...)
-```
+## Delivery
 
-The subquery in the UPDATE is wrapped in a derived table alias so it runs correctly on
-**SQLite, PostgreSQL, and MySQL/MariaDB**. If another worker claims the same row between
-the SELECT and UPDATE, the rowcount is 0 and `None` is returned (the caller retries on
-the next tick).
+Messages are grouped by execution. A group's messages are delivered in order, one at a time:
+a worker leases the group while it handles its head, and other workers take other groups.
+Groups are served round-robin — the one served longest ago first — among those at or above
+the claim's `min_priority`.
 
-### Database compatibility
+- **SQLite** keeps the lease on the message (harel's SQLite layout); claims take turns on
+  SQLite's write lock.
+- **PostgreSQL and MySQL** keep it on the group (harel's PostgreSQL layout) and claim with
+  `SELECT … FOR UPDATE SKIP LOCKED`, so workers claim different groups in parallel. `publish`
+  and `ack` both lock the group's row, so the `ack` that empties a group can't delete it while
+  another transaction is still publishing into it.
 
-| Database | Supported |
-|---|---|
-| SQLite | ✓ |
-| PostgreSQL | ✓ |
-| MySQL / MariaDB | ✓ |
-| Oracle | ✓ (not validated) |
-
-## Redis transport
-
-For higher-throughput deployments you can switch the queue to Redis:
-
-```python
-# settings.py
-DJANGO_HAREL = {
-    "TRANSPORT": "redis",
-    "TRANSPORT_URL": "redis://localhost:6379",
-    ...
-}
-```
-
-Install the `redis` package: `pip install redis`.
-
-**Trade-offs vs DjangoTransport:**
-
-| | DjangoTransport | RedisTransport |
-|---|---|---|
-| Infrastructure | none (same DB) | Redis required |
-| Queue visible in Django admin | ✓ | ✗ |
-| Throughput | low–medium | high |
-| Transport atomicity with store | no (separate systems) | no (separate systems) |
-
-The store always stays as `DjangoStore` regardless of transport choice — execution state,
-deduplication, timers, and spawns remain in your database. The transport is only the
-queue: it does not participate in `transaction.atomic()` and never did. The atomicity
-guarantee is between `DjangoStore` and your Django ORM calls, not between store and
-transport.
-
-## Configuration
-
-Transport is selected via `DJANGO_HAREL["TRANSPORT"]`:
-
-| Value | Transport | Extra setting required |
-|---|---|---|
-| `"django"` (default) | `DjangoTransport` | — |
-| `"redis"` | `RedisTransport` | `TRANSPORT_URL` |
-
-## Protocol methods
-
-| Method | Description |
-|---|---|
-| `publish(group_id, event)` | Enqueue an event for an execution. |
-| `claim(worker_id, visibility)` | Atomically lock one deliverable event. Returns a `Lease` or `None`. |
-| `ack(lease)` | Delete the event (processing complete). |
-| `nack(lease, delay)` | Release the event for redelivery, optionally after a delay. |
-| `close()` | No-op for DjangoTransport; closes the Redis connection for RedisTransport. |
+A lease lasts `visibility` seconds. A worker that dies holding one releases it when it ends —
+or at once, when the worker's step was a transaction that rolled back.

@@ -1,0 +1,41 @@
+# An order's fulfilment: shipping and billing run side by side (orthogonal regions), and
+# shipping packs one parcel per item (a fan-out invoke). Done when both regions succeed.
+import "parcel.stm" as parcels
+
+event Paid {}
+
+machine fulfilment {
+  context {
+    order_id: int
+    items: any
+  }
+
+  initial Fulfilling
+
+  orthogonal Fulfilling {
+    with { order_id: order_id  items: items }
+
+    state Shipping {
+      initial Packing
+      state Packing {
+        invoke parcels.parcel for item in items
+        with { order_id: order_id  item: item }
+      }
+      final Shipped    success
+      final ShipFailed failed
+      from Packing join all to Shipped else to ShipFailed
+    }
+
+    state Billing {
+      initial Charging
+      state Charging {}
+      final Charged success
+      from Charging to Charged on Paid
+    }
+  }
+
+  final Done   success { on enter tests.app.actions.mark_fulfilled }
+  final Failed failed  { on enter tests.app.actions.mark_unfulfilled }
+
+  from Fulfilling join all to Done else to Failed
+}

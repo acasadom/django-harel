@@ -12,6 +12,10 @@ bind {
 }
 
 machine publishing {
+  context {
+    article_id: int
+  }
+
   initial Draft
 
   state Draft    {}

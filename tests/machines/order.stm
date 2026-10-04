@@ -1,0 +1,20 @@
+# An order of the test app: its actions write the app's own tables.
+event Pay {}
+
+machine order {
+  context {
+    order_id: int
+  }
+
+  initial Reserving
+
+  state Reserving { on enter tests.app.actions.reserve_stock }
+  state AwaitingPayment { timeout 60 }
+
+  final Paid    success { on enter tests.app.actions.mark_paid }
+  final Expired expired { on enter tests.app.actions.mark_expired }
+
+  from Reserving       to AwaitingPayment
+  from AwaitingPayment to Paid    on Pay
+  from AwaitingPayment to Expired on Timeout
+}

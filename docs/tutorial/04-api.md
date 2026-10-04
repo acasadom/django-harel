@@ -1,48 +1,30 @@
 # 4. The API
 
-The REST API has two responsibilities:
+The publishing workflow runs in the background: the API only **records** what happened — a
+new article, a submission, an approval — and the worker runs the machine. Each endpoint does
+its work in one transaction, so what it records is all there or not there at all.
 
-1. **Create** — create the `Article` row and start the harel execution atomically.
-2. **Enqueue** — publish events to the queue. The worker processes them; the API returns
-   immediately without waiting.
-
-We use [django-ninja](https://django-ninja.dev) for the REST layer.
-
-## Install django-ninja
+We use [django-ninja](https://django-ninja.dev) for the REST layer; any view works the same.
 
 ```bash
 pip install django-ninja
 ```
 
-## Lazy runner and transport
+## The runner
 
-Define factory functions that are called on first use — not at import time. This avoids
-issues during Django startup and makes testing easier:
+`django_harel.distributed_runner()` is the runner that hands work to the workers. It is built
+once per process from your settings, on first use:
 
 ```python
-# articles/services.py
-from functools import lru_cache
+from django_harel import distributed_runner
 
-@lru_cache(maxsize=1)
-def get_runner():
-    from pathlib import Path
-    from django.conf import settings
-    from django_harel import DjangoRunner
-    from harel.dsl import definition_from_dsl_file
-
-    machines = settings.DJANGO_HAREL.get("MACHINES", {})
-    return DjangoRunner(definitions={
-        defn_id: definition_from_dsl_file(Path(path))
-        for defn_id, path in machines.items()
-    })
-
-def get_transport():
-    from django_harel.transport import DjangoTransport
-    return DjangoTransport()
+runner = distributed_runner()
+runner.create("publishing", context={...})     # a new execution; its Start goes to the queue
+runner.send(execution_id, Event(kind="Submit"))  # an event for the queue
 ```
 
-`get_runner()` is cached with `@lru_cache` because loading `.stm` files from disk is
-a one-time cost. `get_transport()` is stateless so no caching is needed.
+Neither call runs any action: they write to the database, in the caller's transaction, and
+return.
 
 ## The router
 
@@ -53,103 +35,100 @@ from harel.spec.states import Event
 from ninja import Router, Schema
 
 from articles.models import Article
-from articles.services import get_runner, get_transport
+from django_harel import distributed_runner
 
 router = Router()
+
 
 class ArticleIn(Schema):
     title: str
     body: str
     author: str
 
+
 class RejectIn(Schema):
     note: str
 
+
 @router.post("/")
 def create_article(request, payload: ArticleIn):
-    runner = get_runner()
     with transaction.atomic():
-        article = Article.objects.create(
-            title=payload.title, body=payload.body, author=payload.author,
+        article = Article.objects.create(title=payload.title, body=payload.body, author=payload.author)
+        exe = distributed_runner().create(
+            "publishing", context={"article_id": article.pk}, execution_id=f"article-{article.pk}"
         )
-        exe = runner.create("publishing", context={"article_id": article.pk})
         article.execution_id = exe.id
         article.save(update_fields=["execution_id"])
-    article.refresh_from_db()
     return {"article_id": article.pk, "execution_id": exe.id, "status": article.status}
+
 
 @router.get("/{article_id}")
 def get_article(request, article_id: int):
     article = Article.objects.get(pk=article_id)
+    exe = distributed_runner().store.load(article.execution_id)
     return {
-        "article_id": article.pk, "title": article.title, "author": article.author,
-        "status": article.status, "reviewer_note": article.reviewer_note,
+        "article_id": article.pk,
+        "status": article.status,
+        "reviewer_note": article.reviewer_note,
         "published_at": article.published_at,
+        "workflow": {"status": exe.status.value, "state": exe.active_path, "outcome": exe.outcome},
     }
+
+
+def _send(article_id: int, event: Event) -> dict:
+    article = Article.objects.get(pk=article_id)
+    distributed_runner().send(article.execution_id, event)
+    return {"queued": event.kind, "article_id": article_id}
+
 
 @router.post("/{article_id}/submit")
 def submit_article(request, article_id: int):
-    article = Article.objects.get(pk=article_id)
-    get_transport().publish(article.execution_id, Event(kind="Submit"))
-    return {"queued": "Submit"}
+    return _send(article_id, Event(kind="Submit"))
+
 
 @router.post("/{article_id}/approve")
 def approve_article(request, article_id: int):
-    article = Article.objects.get(pk=article_id)
-    get_transport().publish(article.execution_id, Event(kind="Approve"))
-    return {"queued": "Approve"}
+    return _send(article_id, Event(kind="Approve"))
+
 
 @router.post("/{article_id}/reject")
 def reject_article(request, article_id: int, payload: RejectIn):
-    article = Article.objects.get(pk=article_id)
-    get_transport().publish(
-        article.execution_id,
-        Event(kind="Reject", data={"note": payload.note}),
-    )
-    return {"queued": "Reject"}
-
-@router.post("/{article_id}/archive")
-def archive_article(request, article_id: int):
-    article = Article.objects.get(pk=article_id)
-    get_transport().publish(article.execution_id, Event(kind="Archive"))
-    return {"queued": "Archive"}
+    return _send(article_id, Event(kind="Reject", data={"note": payload.note}))
 ```
 
-## Wire the router
-
-```python
-# api.py  (project root)
-from ninja import NinjaAPI
-from articles.api import router as articles_router
-
-api = NinjaAPI()
-api.add_router("/articles", articles_router)
-```
-
-```python
-# urls.py
-from django.urls import path
-from api import api
-
-urlpatterns = [path("api/", api.urls)]
-```
-
-## The create endpoint in detail
+## Why the transaction matters
 
 ```python
 with transaction.atomic():
     article = Article.objects.create(...)
-    exe = runner.create("publishing", context={"article_id": article.pk})
-    article.execution_id = exe.id
-    article.save(update_fields=["execution_id"])
+    exe = distributed_runner().create("publishing", context={"article_id": article.pk}, ...)
+    ...
 ```
 
-`runner.create()` starts the machine synchronously in the current thread. The machine
-enters `Draft` (no action there), and the execution is persisted via `DjangoStore`. Because
-this all happens inside `transaction.atomic()`, the `Article` row and the `harel_executions`
-row are written together — or rolled back together if anything fails.
+`create()` writes the execution and queues its `Start` **on the request's connection**,
+inside its transaction. If anything later in the block fails, the article, the execution and
+the queued `Start` roll back together: no worker ever runs a workflow for an article that
+doesn't exist.
 
-The subsequent `submit`, `approve`, `reject`, and `archive` endpoints only call
-`transport.publish()`. They return immediately — the worker handles the rest.
+That's the problem Celery leaves to you: a task sent with `.delay()` inside a transaction can
+run before the transaction commits — or after it rolled back — unless you remember
+`transaction.on_commit()`. Here the queue *is* the database, so the event is part of the
+transaction.
+
+## Choosing the execution id
+
+`execution_id=f"article-{article.pk}"` names the execution after the domain object it drives.
+Any string unique to it works — an order number, a Stripe PaymentIntent id. A second
+`create()` with the same id raises `ExecutionAlreadyExists`, which makes "start this workflow
+once" safe to retry.
+
+## Duplicate events
+
+An event sent twice (a webhook retried by its sender, a double click) is processed once if it
+carries the same id:
+
+```python
+Event(kind="PaymentSucceeded", id=stripe_event["id"], data={...})
+```
 
 Next: [run the worker](05-worker).

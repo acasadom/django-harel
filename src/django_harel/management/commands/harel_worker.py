@@ -1,116 +1,109 @@
-"""manage.py harel_worker — run a harel background worker over Django's database.
+"""manage.py harel_worker — run the events the requests queued, and the timers that fall due.
 
-Loads definitions from DJANGO_HAREL["MACHINES"] (a dict of
-``definition_id → path/to/file.stm``) and runs an AsyncWorker with the
-Django-backed store + transport. Press Ctrl-C to stop.
+One process runs one event at a time, in its own thread, on Django's connection: its actions
+use the ORM like any Django code. Run more processes to run more events at once; each
+execution's events still run one at a time, in order. SIGTERM or Ctrl-C stops it after the
+event in hand.
 
-Example settings::
-
-    DJANGO_HAREL = {
-        "MACHINES": {
-            "checkout": "myapp/machines/checkout.stm",
-            "onboarding": "myapp/machines/onboarding.stm",
-        },
-        "CONCURRENCY": 8,
-        "VISIBILITY": 30.0,
-    }
+With `DJANGO_HAREL['ATOMIC_STEP']` (the default) each event is one transaction: the claim,
+what its actions write to the database, the machine's step and the ack commit together, or
+none of them does — a worker that dies mid-event leaves nothing behind, and the event is
+claimable again at once.
 """
 
 from __future__ import annotations
 
+import logging
+import os
+import signal
 import socket
+import threading
+from contextlib import nullcontext
 
-import anyio
 from django.core.management.base import BaseCommand
+from django.db import DEFAULT_DB_ALIAS, close_old_connections, transaction
 
-from django_harel.aio_store import AsyncDjangoStore
-from django_harel.aio_transport import AsyncDjangoTransport
-from django_harel.conf import build_transport, get_harel_setting
+from django_harel import conf
+
+logger = logging.getLogger("django_harel.worker")
 
 
 class Command(BaseCommand):
-    help = "Run a harel background worker using the Django database."
+    help = "Run harel's queued events and due timers."
 
     def add_arguments(self, parser):
         parser.add_argument(
-            "--concurrency",
-            type=int,
-            default=None,
-            help="Max events in flight simultaneously (default: DJANGO_HAREL['CONCURRENCY'] or 8).",
+            "--worker-id", default=None, help="This worker's name in its leases (default: host:pid)."
         )
         parser.add_argument(
             "--visibility",
             type=float,
             default=None,
-            help="Lease visibility window in seconds (default: DJANGO_HAREL['VISIBILITY'] or 30).",
+            help="Seconds a claimed event stays leased before another worker may take it "
+            "(default: DJANGO_HAREL['VISIBILITY'], 30). Longer than your slowest action.",
         )
         parser.add_argument(
-            "--worker-id",
+            "--idle-sleep",
+            type=float,
             default=None,
-            help="Unique worker identifier (default: hostname).",
-        )
-        parser.add_argument(
-            "--trace",
-            action="store_true",
-            default=False,
-            help="Enable per-execution trace recording.",
+            help="Seconds to wait when there's nothing to do (default: DJANGO_HAREL['IDLE_SLEEP'], 0.2).",
         )
 
     def handle(self, *args, **options):
-        from harel.dsl import definition_from_dsl_file
-        from harel.engine.aio.distributed import AsyncWorker
+        worker_id = options["worker_id"] or f"{socket.gethostname()}:{os.getpid()}"
+        visibility = options["visibility"] or conf.get_setting("VISIBILITY")
+        idle_sleep = options["idle_sleep"] or conf.get_setting("IDLE_SLEEP")
 
-        machines: dict[str, str] = get_harel_setting("MACHINES", {})
-        if not machines:
-            self.stderr.write(
-                self.style.ERROR("No machines configured. Add DJANGO_HAREL['MACHINES'] to settings.")
-            )
-            return
-
-        concurrency: int = options["concurrency"] or get_harel_setting("CONCURRENCY", 8)
-        visibility: float = options["visibility"] or get_harel_setting("VISIBILITY", 30.0)
-        worker_id: str = options["worker_id"] or get_harel_setting("WORKER_ID", socket.gethostname())
-
-        definitions = {}
-        for definition_id, path in machines.items():
-            defn = definition_from_dsl_file(path)
-            definitions[definition_id] = defn
-            self.stdout.write(f"  Loaded definition: {definition_id} from {path}")
-
-        store = AsyncDjangoStore()
-        transport = AsyncDjangoTransport(build_transport())
-        worker = AsyncWorker(
-            store=store,
-            transport=transport,
-            definitions=definitions,
+        definitions = conf.definitions()
+        worker = conf.distributed_runner().worker(
             worker_id=worker_id,
             visibility=visibility,
-            concurrency=concurrency,
-            trace=options["trace"],
+            suspend_recheck=conf.get_setting("SUSPEND_RECHECK"),
         )
 
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"Starting harel worker [{worker_id}] concurrency={concurrency} visibility={visibility}s"
-            )
-        )
-
-        async def _run():
-            import asyncio
-            import signal
-
-            stop = asyncio.Event()
-            loop = asyncio.get_running_loop()
-            for sig in (signal.SIGTERM, signal.SIGINT):
-                loop.add_signal_handler(sig, stop.set)
-            try:
-                await worker.run(stop)
-            finally:
-                await store.close()
-                await transport.close()
-
+        stop = threading.Event()
+        previous = {sig: signal.signal(sig, lambda *_: stop.set()) for sig in (signal.SIGTERM, signal.SIGINT)}
+        self.stdout.write(f"harel worker {worker_id}: {', '.join(sorted(definitions))}")
         try:
-            anyio.run(_run)
-        except KeyboardInterrupt:
-            pass
-        self.stdout.write(self.style.WARNING("Worker stopped."))
+            run(
+                worker,
+                stop,
+                idle_sleep,
+                atomic=conf.get_setting("ATOMIC_STEP"),
+                using=conf.get_setting("DATABASE"),
+            )
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+        self.stdout.write("harel worker stopped")
+
+
+def run(
+    worker, stop: threading.Event, idle_sleep: float, *, atomic: bool = True, using: str = DEFAULT_DB_ALIAS
+) -> None:
+    """Claim and run events until `stop`; fire the due timers when the queue is empty. With
+    `atomic`, each event (and each timer sweep) is one transaction on the database `using`."""
+
+    def unit():
+        return transaction.atomic(using=using) if atomic else nullcontext()
+
+    while not stop.is_set():
+        try:
+            with unit():
+                progressed = worker.step()
+            if progressed:
+                continue  # keep the connection while there's work: no reconnect per event
+            with unit():
+                fired = worker.fire_due_timers()
+            if fired:
+                continue
+        except Exception:
+            # the store or the queue failed (the database went away?), and the event in hand
+            # comes back: at once if its step rolled back, else when its lease ends — wait,
+            # then carry on
+            logger.exception("harel worker iteration failed")
+        # idle, or after a failure: drop a connection that broke or outlived CONN_MAX_AGE
+        # (the worker lives for days); the next query opens a fresh one
+        close_old_connections()
+        stop.wait(idle_sleep)
+    close_old_connections()

@@ -1,7 +1,9 @@
 # 3. Actions
 
-Actions are plain Python functions called by the worker when the machine enters a state.
-They receive a `proxy` object and the `event` that triggered the transition.
+Actions are plain Python functions the machine calls as it enters or leaves a state — on the
+worker for a machine run in the background, in the request for one run in the request. They
+receive a `proxy` object and the `event` that triggered the transition, and they use the ORM
+like any other Django code.
 
 ## The Article model
 
@@ -54,11 +56,11 @@ def on_archived(proxy, event, **_):
 
 ## The proxy object
 
-The worker passes a `proxy` to each action with two attributes:
+Each action gets a `proxy` with two attributes:
 
 | Attribute | Type | Description |
 |---|---|---|
-| `proxy.execution_ctx` | `dict` | the context dict passed to `runner.create(context=…)` |
+| `proxy.execution_ctx` | `dict` | the execution's context: what `create(context=…)` passed, plus the machine's defaults |
 | `proxy.idempotency_key` | `str` | stable `{execution_id}:{version}:{index}` key for deduplicating external calls (emails, webhooks, etc.) |
 
 `execution_ctx` is how actions reach back to the domain model. When you create an execution
@@ -81,11 +83,33 @@ And the action reads it:
 note = event.data.get("note", "")
 ```
 
-## Atomicity
+## Transactions and failures
 
-Actions run inside the worker's processing loop, which commits the execution advance and
-all side effects in a single `transaction.atomic()`. If an action raises an exception the
-entire commit is rolled back and the event is redelivered — your Django model update is
-never persisted without the statechart also advancing.
+What an action writes to the database commits with the step that ran it: in the request,
+with the request's transaction; on the worker, with the event's own transaction (see
+[the worker](05-worker)). If the step doesn't commit, neither do the action's writes.
+
+When an action **raises**, the machine decides what happens:
+
+- a transition `on error` in scope takes it (the exception is in `context._error`) — model
+  the failures you expect this way;
+- otherwise the execution is **dead-lettered**: its status becomes `FAILED`, with the
+  exception in `error`, and it waits for an operator (`redrive` it once the bug is fixed).
+
+Either way, the step *commits* — the machine records the failure. So an action that writes
+and then raises would leave its first writes behind. Make it all-or-nothing with Django's own
+savepoints:
+
+```python
+from django.db import transaction
+
+@transaction.atomic
+def on_published(proxy, event, **_):
+    ...
+```
+
+What an action does *outside* the database — an email, a payment API call — can't roll back.
+A step can run more than once (a worker that dies mid-event, a redelivery), so pass
+`proxy.idempotency_key` to the service: it is the same each time the same step runs.
 
 Next: [build the API](04-api).

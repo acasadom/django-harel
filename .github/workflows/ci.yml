@@ -10,10 +10,14 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: lint + type-check
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -27,12 +31,35 @@ jobs:
         run: make type-check
 
   test:
-    name: test (py${{ matrix.python-version }})
+    name: test (py${{ matrix.python-version }}, ${{ matrix.db }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.13"]
+        db: [sqlite, postgres, mysql]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: harel
+          POSTGRES_DB: harel
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: harel
+          MYSQL_DATABASE: harel
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -pharel" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      HAREL_TEST_DB: ${{ matrix.db }}
+      HAREL_TEST_POSTGRES: "127.0.0.1:5432:postgres:harel:harel"
+      HAREL_TEST_MYSQL: "127.0.0.1:3306:root:harel:harel"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5

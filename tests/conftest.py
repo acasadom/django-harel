@@ -2,32 +2,20 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-MACHINES_DIR = Path(__file__).parent / "machines"
 
+@pytest.fixture(autouse=True)
+def _empty_harel_tables(request):
+    """Django's flush between `transaction=True` tests skips harel's tables (no managed model
+    owns them): empty them after each test that touched the database."""
+    yield
+    if "django_db_setup" not in request.fixturenames:
+        return
+    from django.db import connection
 
-@pytest.fixture
-def job_definition():
-    """A simple 3-state machine: Pending → Running → Done|Failed."""
-    from harel.dsl import definition_from_dsl_file
+    from django_harel.schema import TABLES
 
-    return definition_from_dsl_file(MACHINES_DIR / "job.stm")
-
-
-@pytest.fixture
-def store(db):
-    """A DjangoStore backed by the test database."""
-    from django_harel.store import DjangoStore
-
-    return DjangoStore()
-
-
-@pytest.fixture
-def runner(job_definition, db):
-    """A DjangoRunner wired to the job machine and test DB."""
-    from django_harel.runner import DjangoRunner
-
-    return DjangoRunner(definitions={"job": job_definition})
+    with connection.cursor() as cur:
+        for table in TABLES:
+            cur.execute(f"DELETE FROM {table}")

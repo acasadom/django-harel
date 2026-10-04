@@ -1,70 +1,205 @@
-"""DjangoStore — an ExecutionStore backed by Django's ORM.
+"""DjangoStore — harel's `ExecutionStore` on Django's database connection.
 
-The key property: `commit()` uses `transaction.atomic()`, which is nestable in
-Django. If the caller already holds a `transaction.atomic()` context (e.g. in a
-view or a signal), the statechart advance participates in that transaction via a
-SAVEPOINT — rolling the outer transaction back also rolls back the execution
-advance. This is the "dual-write-free" guarantee: domain models and statechart
-state commit together or not at all.
+Every write runs in `transaction.atomic()` on the connection Django gives the current thread.
+Inside a caller's `atomic()` block that is a savepoint: the machine's step commits, or rolls
+back, together with the caller's own writes. Outside one it is a transaction of its own.
+
+The tables are harel's (see `django_harel.schema`), so on SQLite and PostgreSQL harel's own
+stores can read what this one writes, and the other way round.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
-from django.db import transaction as djtx
-from harel.engine.execution import Execution, ExecutionPage, ExecutionSummary, Status
-from harel.engine.store._base import (
+from django.db import DEFAULT_DB_ALIAS, IntegrityError, connections, transaction
+from harel.engine.execution import Execution, ExecutionPage, Status
+from harel.engine.store.base import (
     DEFAULT_TRACE_MAX,
     OutboxEntry,
     SpawnEntry,
     StoreConflict,
     TimerOp,
-    _decode_offset,
-    _encode_offset,
+    decode_offset,
+    like_prefix,
+    listing_page,
 )
 from harel.spec.states import Event
 
+from django_harel.schema import check_vendor
+
+# the summary fields `list_executions` reads out of the Execution JSON, in `listing_page` order
+_SUMMARY_FIELDS = ("status", "outcome", "active_path", "parent_id", "finished_at")
+
+
+def json_field(vendor: str, field: str) -> str:
+    """An SQL expression reading `field` out of the `data` JSON, as text (NULL if null)."""
+    if vendor == "sqlite":
+        return f"json_extract(data, '$.{field}')"
+    if vendor == "postgresql":
+        return f"(data::jsonb ->> '{field}')"
+    # MySQL/MariaDB: JSON_UNQUOTE turns a JSON null into the string 'null'
+    value = f"JSON_EXTRACT(data, '$.{field}')"
+    return f"(CASE WHEN JSON_TYPE({value}) = 'NULL' THEN NULL ELSE JSON_UNQUOTE({value}) END)"
+
 
 class DjangoStore:
-    """ExecutionStore implementation over Django's ORM.
+    """An `ExecutionStore` over the Django database `using` (default: `"default"`)."""
 
-    Works with any Django-supported database (SQLite for tests, Postgres in
-    production). Imports Django models lazily so the class can be imported
-    before `django.setup()` is called (e.g. at module level in settings)."""
-
-    def __init__(self, trace_max: int = DEFAULT_TRACE_MAX) -> None:
+    def __init__(self, using: str = DEFAULT_DB_ALIAS, *, trace_max: int = DEFAULT_TRACE_MAX) -> None:
+        self.using = using
         self.trace_max = trace_max
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
+    # --- helpers -----------------------------------------------------------------------------
+    @property
+    def _connection(self) -> Any:
+        return connections[self.using]
 
-    @staticmethod
-    def _models():
-        from django_harel.models import (
-            HarelExecution,
-            HarelOutbox,
-            HarelProcessedEvent,
-            HarelSpawn,
-            HarelTimer,
-            HarelTrace,
-        )
+    @property
+    def _vendor(self) -> str:
+        vendor = self._connection.vendor
+        check_vendor(vendor)
+        return vendor
 
-        return HarelExecution, HarelOutbox, HarelProcessedEvent, HarelSpawn, HarelTimer, HarelTrace
+    def _execute(self, sql: str, params: Iterable = ()) -> Any:
+        """Run one statement; return the cursor's rowcount."""
+        with self._connection.cursor() as cur:
+            cur.execute(sql, list(params))
+            return cur.rowcount
 
-    # ------------------------------------------------------------------
-    # ExecutionStore protocol
-    # ------------------------------------------------------------------
+    def _fetchall(self, sql: str, params: Iterable = ()) -> list[tuple]:
+        with self._connection.cursor() as cur:
+            cur.execute(sql, list(params))
+            return cur.fetchall()
 
+    def _fetchone(self, sql: str, params: Iterable = ()) -> Optional[tuple]:
+        with self._connection.cursor() as cur:
+            cur.execute(sql, list(params))
+            return cur.fetchone()
+
+    def _insert_seq(self, sql: str, params: Iterable) -> int:
+        """Run an INSERT into a table keyed by an auto-increment `seq`; return the new seq."""
+        with self._connection.cursor() as cur:
+            if self._connection.features.can_return_columns_from_insert:
+                cur.execute(f"{sql} RETURNING seq", list(params))
+                return cur.fetchone()[0]
+            cur.execute(sql, list(params))
+            return cur.lastrowid
+
+    def _insert_ignore(self, table: str, columns: tuple[str, ...], params: Iterable) -> None:
+        """INSERT a row unless one with the same primary key is there."""
+        cols, marks = ", ".join(columns), ", ".join(["%s"] * len(columns))
+        vendor = self._vendor
+        if vendor == "sqlite":
+            sql = f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({marks})"
+        elif vendor == "postgresql":
+            sql = f"INSERT INTO {table} ({cols}) VALUES ({marks}) ON CONFLICT DO NOTHING"
+        else:
+            sql = f"INSERT INTO {table} ({cols}) VALUES ({marks}) ON DUPLICATE KEY UPDATE {columns[0]} = {columns[0]}"
+        self._execute(sql, params)
+
+    # --- the execution -------------------------------------------------------------------------
     def load(self, execution_id: str) -> Optional[Execution]:
-        HarelExecution, *_ = self._models()
+        row = self._fetchone("SELECT data FROM harel_executions WHERE id = %s", [execution_id])
+        return Execution.model_validate_json(row[0]) if row is not None else None
+
+    def load_for_event(self, execution_id: str, event_id: str) -> tuple[Optional[Execution], bool]:
+        """`load` and `is_processed` in one round-trip (the worker uses it when present)."""
+        row = self._fetchone(
+            "SELECT data, EXISTS (SELECT 1 FROM harel_processed_events "
+            "WHERE execution_id = %s AND event_id = %s) FROM harel_executions WHERE id = %s",
+            [execution_id, event_id, execution_id],
+        )
+        if row is None:
+            return None, False
+        return Execution.model_validate_json(row[0]), bool(row[1])
+
+    def _write(self, exe: Execution) -> None:
+        """The version-CAS write of `exe`, inside the caller's atomic block."""
+        old = exe.version
+        exe.version = old + 1
+        data = exe.model_dump_json()
+        updated = self._execute(
+            "UPDATE harel_executions SET data = %s, version = %s WHERE id = %s AND version = %s",
+            [data, exe.version, exe.id, old],
+        )
+        if updated:
+            return
+        found = self._fetchone("SELECT version FROM harel_executions WHERE id = %s", [exe.id])
+        if found is None and old == 0:
+            try:
+                with transaction.atomic(using=self.using):
+                    self._execute(
+                        "INSERT INTO harel_executions (id, definition_id, data, version) VALUES (%s, %s, %s, %s)",
+                        [exe.id, exe.definition_id, data, exe.version],
+                    )
+                return
+            except IntegrityError:
+                found = None  # another writer created it first
+        exe.version = old
+        raise StoreConflict(exe.id, expected=old, found=found[0] if found else None)
+
+    def save(self, exe: Execution) -> None:
+        old = exe.version
         try:
-            obj = HarelExecution.objects.get(pk=execution_id)
-        except HarelExecution.DoesNotExist:
-            return None
-        return Execution.model_validate_json(obj.data)
+            with transaction.atomic(using=self.using):
+                self._write(exe)
+        except BaseException:
+            exe.version = old
+            raise
+
+    def commit(
+        self,
+        exe: Execution,
+        emits: list[tuple[Optional[str], Event]],
+        processed_event_id: Optional[str] = None,
+        timers: tuple[TimerOp, ...] = (),
+        spawns: tuple[tuple[str, str, dict], ...] = (),
+        trace: Optional[dict] = None,
+    ) -> list[int]:
+        old = exe.version
+        try:
+            with transaction.atomic(using=self.using):
+                self._write(exe)
+                seqs = [
+                    self._insert_seq(
+                        "INSERT INTO harel_outbox (target_id, event) VALUES (%s, %s)",
+                        [target_id, event.model_dump_json()],
+                    )
+                    for target_id, event in emits
+                ]
+                if processed_event_id is not None:
+                    self._insert_ignore(
+                        "harel_processed_events", ("execution_id", "event_id"), [exe.id, processed_event_id]
+                    )
+                for child_id, root_path, context in spawns:
+                    self._execute(
+                        "INSERT INTO harel_spawns (parent_id, child_id, root_path, context) VALUES (%s, %s, %s, %s)",
+                        [exe.id, child_id, root_path, json.dumps(context)],
+                    )
+                for op in timers:
+                    self._execute(
+                        "DELETE FROM harel_timers WHERE execution_id = %s AND path = %s", [exe.id, op.path]
+                    )
+                    if op.action == "schedule":
+                        self._execute(
+                            "INSERT INTO harel_timers (execution_id, path, fire_at) VALUES (%s, %s, %s)",
+                            [exe.id, op.path, op.fire_at],
+                        )
+                if trace is not None:
+                    self._write_trace(exe.id, trace)
+            return seqs
+        except BaseException:
+            exe.version = old
+            raise
+
+    def is_processed(self, execution_id: str, event_id: str) -> bool:
+        row = self._fetchone(
+            "SELECT 1 FROM harel_processed_events WHERE execution_id = %s AND event_id = %s",
+            [execution_id, event_id],
+        )
+        return row is not None
 
     def list_executions(
         self,
@@ -75,205 +210,111 @@ class DjangoStore:
         limit: int = 100,
         cursor: Optional[str] = None,
     ) -> ExecutionPage:
-        HarelExecution, *_ = self._models()
-        qs = HarelExecution.objects.order_by("id")
+        vendor = self._vendor
+        field = {name: json_field(vendor, name) for name in _SUMMARY_FIELDS}
+        where, params = ["1 = 1"], []
         if definition_id is not None:
-            qs = qs.filter(definition_id=definition_id)
+            where.append("definition_id = %s")
+            params.append(definition_id)
         if status is not None:
-            qs = qs.filter(status__in=[s.value for s in status])
+            statuses = [s.value for s in status]
+            if not statuses:
+                where.append("1 = 0")
+            else:
+                where.append(f"{field['status']} IN ({', '.join(['%s'] * len(statuses))})")
+                params += statuses
         if roots_only:
-            qs = qs.filter(parent_id__isnull=True)
-        off = _decode_offset(cursor)
-        rows = qs[off : off + limit + 1]
-        items = [
-            ExecutionSummary(
-                id=r.id,
-                definition_id=r.definition_id,
-                version=r.version,
-                status=r.status,
-                outcome=None,  # not stored as a separate column; omitted for list view
-                active_path=r.active_path or None,
-                parent_id=r.parent_id,
+            where.append(f"{field['parent_id']} IS NULL")
+        off = decode_offset(cursor)
+        rows = self._fetchall(
+            f"SELECT id, definition_id, version, {', '.join(field.values())} FROM harel_executions "
+            f"WHERE {' AND '.join(where)} ORDER BY id LIMIT %s OFFSET %s",
+            [*params, limit + 1, off],
+        )
+        # finished_at comes out as text from the JSON on some vendors
+        rows = [(*r[:7], float(r[7]) if r[7] is not None else None) for r in rows]
+        return listing_page(rows, limit, off)
+
+    def ids_with_prefix(self, prefix: str) -> list[str]:
+        # MySQL's LIKE escapes with a backslash by default, and reads '\\' as one backslash
+        escape = "" if self._vendor == "mysql" else " ESCAPE '\\'"
+        rows = self._fetchall(
+            f"SELECT id FROM harel_executions WHERE id LIKE %s{escape}", [like_prefix(prefix)]
+        )
+        return [r[0] for r in rows]
+
+    def purge(self, execution_id: str, expected_version: int) -> bool:
+        with transaction.atomic(using=self.using):
+            deleted = self._execute(
+                "DELETE FROM harel_executions WHERE id = %s AND version = %s",
+                [execution_id, expected_version],
             )
-            for r in rows[:limit]
-        ]
-        nxt = _encode_offset(off + limit) if len(rows) > limit else None
-        return ExecutionPage(items=items, next_cursor=nxt)
+            if not deleted and self._fetchone("SELECT 1 FROM harel_executions WHERE id = %s", [execution_id]):
+                return False  # it moved on: touch nothing
+            for sql in (
+                "DELETE FROM harel_processed_events WHERE execution_id = %s",
+                "DELETE FROM harel_trace WHERE execution_id = %s",
+                "DELETE FROM harel_timers WHERE execution_id = %s",
+                "DELETE FROM harel_outbox WHERE target_id = %s",
+                "DELETE FROM harel_spawns WHERE parent_id = %s",
+            ):
+                self._execute(sql, [execution_id])
+            return bool(deleted)
 
-    def save(self, exe: Execution) -> None:
-        self.commit(exe, [])
-
-    def commit(
-        self,
-        exe: Execution,
-        emits: list[tuple[Optional[str], Event]],
-        processed_event_id: Optional[str] = None,
-        timers: tuple[TimerOp, ...] = (),
-        spawns: tuple[tuple[str, str, dict], ...] = (),
-        trace: Optional[dict] = None,
-    ) -> None:
-        """Atomically advance the Execution (CAS on version) and write all
-        deferred work (outbox, spawns, timers, trace) in a single transaction.
-
-        If the caller is already inside a `transaction.atomic()` block, this
-        creates a SAVEPOINT and participates in the outer transaction — so the
-        domain models and statechart state commit (or roll back) together."""
-        HarelExecution, HarelOutbox, HarelProcessedEvent, HarelSpawn, HarelTimer, HarelTrace = self._models()
-        old = exe.version
-        exe.version = old + 1
-        data = exe.model_dump_json()
-        status_val = exe.status.value
-        active_path_val = exe.active_path or ""
-        parent_id_val = exe.parent_id
-
-        try:
-            with djtx.atomic():
-                # CAS: UPDATE WHERE version = old
-                updated = HarelExecution.objects.filter(pk=exe.id, version=old).update(
-                    data=data,
-                    version=exe.version,
-                    status=status_val,
-                    active_path=active_path_val,
-                    parent_id=parent_id_val,
-                )
-                if updated == 0:
-                    # Either a brand-new execution (version=0 and no row) or a conflict
-                    if old == 0 and not HarelExecution.objects.filter(pk=exe.id).exists():
-                        HarelExecution.objects.create(
-                            id=exe.id,
-                            definition_id=exe.definition_id,
-                            data=data,
-                            version=1,
-                            status=status_val,
-                            active_path=active_path_val,
-                            parent_id=parent_id_val,
-                        )
-                    else:
-                        exe.version = old
-                        raise StoreConflict(exe.id, expected=old, found=None)
-
-                # Outbox: events to deliver after this transaction commits
-                for target_id, event in emits:
-                    HarelOutbox.objects.create(
-                        target_id=target_id,
-                        event=event.model_dump_json(),
-                    )
-
-                # Deduplication: mark this event as processed
-                if processed_event_id is not None:
-                    HarelProcessedEvent.objects.get_or_create(
-                        execution_id=exe.id,
-                        event_id=processed_event_id,
-                    )
-
-                # Orthogonal spawns: child-execution creation intents
-                for child_id, root_path, context in spawns:
-                    HarelSpawn.objects.create(
-                        parent_id=exe.id,
-                        child_id=child_id,
-                        root_path=root_path,
-                        context=json.dumps(context),
-                    )
-
-                # Timers: schedule or cancel
-                for op in timers:
-                    if op.action == "schedule":
-                        HarelTimer.objects.update_or_create(
-                            execution_id=exe.id,
-                            path=op.path,
-                            defaults={"fire_at": op.fire_at},
-                        )
-                    else:
-                        HarelTimer.objects.filter(
-                            execution_id=exe.id,
-                            path=op.path,
-                        ).delete()
-
-                # Trace: append + ring-cap
-                if trace is not None:
-                    self._write_trace(exe.id, trace, HarelTrace)
-
-        except StoreConflict:
-            raise
-        except Exception:
-            exe.version = old
-            raise
-
-    def _write_trace(self, execution_id: str, entry: dict, HarelTrace) -> None:
-        from django.db.models import Max
-
-        agg = HarelTrace.objects.filter(execution_id=execution_id).aggregate(max_idx=Max("idx"))
-        next_idx = (agg["max_idx"] if agg["max_idx"] is not None else -1) + 1
-        HarelTrace.objects.create(execution_id=execution_id, idx=next_idx, entry=json.dumps(entry))
+    # --- the trace -----------------------------------------------------------------------------
+    def _write_trace(self, execution_id: str, entry: dict) -> None:
+        last = self._fetchone("SELECT MAX(idx) FROM harel_trace WHERE execution_id = %s", [execution_id])
+        idx = 0 if last is None or last[0] is None else last[0] + 1
+        self._execute(
+            "INSERT INTO harel_trace (execution_id, idx, entry) VALUES (%s, %s, %s)",
+            [execution_id, idx, json.dumps(entry)],
+        )
         if self.trace_max:
-            # Delete rows older than the ring: keep the last trace_max entries
-            cutoff = next_idx - self.trace_max
-            if cutoff >= 0:
-                HarelTrace.objects.filter(execution_id=execution_id, idx__lte=cutoff).delete()
+            self._execute(
+                "DELETE FROM harel_trace WHERE execution_id = %s AND idx <= %s",
+                [execution_id, idx - self.trace_max],
+            )
 
     def append_trace(self, execution_id: str, entry: dict) -> None:
-        _, _, _, _, _, HarelTrace = self._models()
-        with djtx.atomic():
-            self._write_trace(execution_id, entry, HarelTrace)
+        with transaction.atomic(using=self.using):
+            self._write_trace(execution_id, entry)
 
     def read_trace(self, execution_id: str) -> list[dict]:
-        _, _, _, _, _, HarelTrace = self._models()
-        rows = HarelTrace.objects.filter(execution_id=execution_id).order_by("idx")
-        return [{**json.loads(r.entry), "index": r.idx} for r in rows]
+        rows = self._fetchall(
+            "SELECT idx, entry FROM harel_trace WHERE execution_id = %s ORDER BY idx", [execution_id]
+        )
+        return [{**json.loads(entry), "index": idx} for idx, entry in rows]
 
-    def is_processed(self, execution_id: str, event_id: str) -> bool:
-        _, _, HarelProcessedEvent, *_ = self._models()
-        return HarelProcessedEvent.objects.filter(
-            execution_id=execution_id,
-            event_id=event_id,
-        ).exists()
-
+    # --- deferred work -------------------------------------------------------------------------
     def pending_outbox(self) -> list[OutboxEntry]:
-        _, HarelOutbox, *_ = self._models()
-        rows = HarelOutbox.objects.order_by("seq")
+        rows = self._fetchall("SELECT seq, target_id, event FROM harel_outbox ORDER BY seq")
         return [
-            OutboxEntry(
-                seq=r.seq,
-                target_id=r.target_id,
-                event=Event.model_validate_json(r.event),
-            )
-            for r in rows
+            OutboxEntry(seq, target_id, Event.model_validate_json(event)) for seq, target_id, event in rows
         ]
 
     def ack_outbox(self, seq: int) -> None:
-        _, HarelOutbox, *_ = self._models()
-        HarelOutbox.objects.filter(seq=seq).delete()
+        self._execute("DELETE FROM harel_outbox WHERE seq = %s", [seq])
 
     def pending_spawns(self) -> list[SpawnEntry]:
-        _, _, _, HarelSpawn, *_ = self._models()
-        rows = HarelSpawn.objects.order_by("seq")
-        return [
-            SpawnEntry(
-                seq=r.seq,
-                parent_id=r.parent_id,
-                child_id=r.child_id,
-                root_path=r.root_path,
-                context=json.loads(r.context),
-            )
-            for r in rows
-        ]
+        rows = self._fetchall(
+            "SELECT seq, parent_id, child_id, root_path, context FROM harel_spawns ORDER BY seq"
+        )
+        return [SpawnEntry(seq, pid, cid, rp, json.loads(ctx)) for seq, pid, cid, rp, ctx in rows]
 
     def ack_spawn(self, seq: int) -> None:
-        _, _, _, HarelSpawn, *_ = self._models()
-        HarelSpawn.objects.filter(seq=seq).delete()
+        self._execute("DELETE FROM harel_spawns WHERE seq = %s", [seq])
 
     def due_timers(self, now: float) -> list[tuple[str, str, float]]:
-        _, _, _, _, HarelTimer, _ = self._models()
-        rows = HarelTimer.objects.filter(fire_at__lte=now).order_by("fire_at")
-        return [(r.execution_id, r.path, float(r.fire_at)) for r in rows]
+        rows = self._fetchall(
+            "SELECT execution_id, path, fire_at FROM harel_timers WHERE fire_at <= %s ORDER BY fire_at", [now]
+        )
+        return [(eid, path, float(fire_at)) for eid, path, fire_at in rows]
 
     def delete_timer(self, execution_id: str, path: str, fire_at: float) -> None:
-        _, _, _, _, HarelTimer, _ = self._models()
-        HarelTimer.objects.filter(
-            execution_id=execution_id,
-            path=path,
-            fire_at=fire_at,
-        ).delete()
+        self._execute(
+            "DELETE FROM harel_timers WHERE execution_id = %s AND path = %s AND fire_at = %s",
+            [execution_id, path, fire_at],
+        )
 
     def close(self) -> None:
-        pass  # Django manages its own connection pool
+        """Nothing to release: Django owns the connection."""

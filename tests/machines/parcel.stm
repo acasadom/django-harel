@@ -1,0 +1,17 @@
+# One parcel of an order, invoked once per item by fulfilment.stm.
+machine parcel {
+  context {
+    order_id: int
+    item: string
+  }
+
+  initial Packing
+
+  state Packing { on enter tests.app.actions.pack }
+
+  final Packed  success
+  final Damaged failed
+
+  from Packing to Packed
+  from Packing to Damaged on error
+}

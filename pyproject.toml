@@ -10,23 +10,21 @@ keywords = ["statechart", "state-machine", "django", "celery", "durable-executio
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Framework :: Django",
-    "Framework :: Django :: 4.2",
-    "Framework :: Django :: 5.0",
-    "Framework :: Django :: 5.1",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
 requires-python = ">=3.11,<4"
 dependencies = [
-    "harel>=0.1.4",
-    "django>=4.2",
-    # sync_to_async wrapping for AsyncDjangoStore/AsyncDjangoTransport
-    "asgiref>=3.7",
+    "harel>=0.7.0",
+    "django>=5.2",
 ]
 
 [project.urls]
@@ -41,8 +39,10 @@ dev = [
     "ruff",
     "mypy",
     "django-stubs",
-    "harel[lsp]>=0.1.2",
+    "harel[lsp]>=0.7.0",
     "django-ninja",
+    "psycopg[binary]>=3.3.6",
+    "pymysql>=1.2.3",
 ]
 
 [build-system]

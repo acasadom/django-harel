@@ -3,8 +3,8 @@
 ## Requirements
 
 - Python 3.11+
-- Django 4.2 or later
-- An existing Django project
+- Django 5.2 or later
+- SQLite, PostgreSQL, or MySQL 8.0.1+
 
 ## Install
 
@@ -12,16 +12,7 @@
 pip install django-harel
 ```
 
-For Redis transport (optional, for higher-throughput deployments):
-
-```bash
-pip install django-harel redis
-```
-
 ## Add to your project
-
-Add `django_harel` to `INSTALLED_APPS` and run the migrations that create the harel
-tables (`harel_executions`, `harel_queue`, and five supporting tables):
 
 ```python
 # settings.py
@@ -37,8 +28,8 @@ python manage.py migrate
 
 ## Minimal configuration
 
-Add a `DJANGO_HAREL` dict to your settings. At minimum you need `MACHINES` — a mapping
-of machine names to `.stm` file paths (relative to the directory where you run `manage.py`):
+`DJANGO_HAREL["MACHINES"]` maps each machine's name to its `.stm` file. A relative path is
+relative to `settings.BASE_DIR` (or, without one, to the working directory):
 
 ```python
 # settings.py
@@ -49,23 +40,30 @@ DJANGO_HAREL = {
 }
 ```
 
-The full list of settings is in the [Settings reference](../reference/settings).
+The other settings are in the [settings reference](../reference/settings).
 
-## What was just created
+## What `migrate` created
 
-`migrate` creates seven tables in your database, all prefixed with `harel_`:
+harel's own schema, with every table prefixed `harel_`:
 
-| Table | Purpose |
+| Table | Holds |
 |---|---|
-| `harel_executions` | one row per running state machine instance |
-| `harel_queue` | event queue consumed by `harel_worker` |
-| `harel_outbox` | emitted events pending relay |
-| `harel_processed_events` | deduplication log |
-| `harel_timers` | scheduled timeouts |
-| `harel_spawns` | orthogonal region child-creation intents |
-| `harel_trace` | optional execution timeline (ring buffer) |
+| `harel_executions` | one row per execution: its state, context and status, as JSON |
+| `harel_outbox` | events a step emitted, until they are delivered |
+| `harel_processed_events` | the events each execution handled (a redelivered one is skipped) |
+| `harel_timers` | armed timeouts and when they fire |
+| `harel_spawns` | child executions a step is about to create |
+| `harel_trace` | each execution's recent steps, when tracing is on |
+| `harel_transport_messages` | the queue the workers read |
+| `harel_transport_groups` | one row per execution with queued events: its lease and priority |
 
-Your application code only touches `harel_queue` (to publish events) and reads
-`harel_executions` indirectly through `DjangoStore`. The rest is internal to the engine.
+On SQLite and PostgreSQL these are exactly the tables harel's own backends create, so harel's
+tools can read them too.
+
+```{note}
+If your test suite uses `TransactionTestCase` (or `pytest.mark.django_db(transaction=True)`),
+Django's flush between tests leaves these tables alone — no model of yours owns them. See
+[Testing](../reference/testing).
+```
 
 Next: [define the state machine](02-state-machine).

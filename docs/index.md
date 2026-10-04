@@ -2,33 +2,35 @@
 
 *Django integration for harel statecharts — a Celery alternative for state-machine-shaped work.*
 
-[![CI](https://github.com/acasadom/django-harel/actions/workflows/ci.yml/badge.svg)](https://github.com/acasadom/django-harel/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue)
+**django-harel** runs [harel](https://github.com/acasadom/harel) statecharts on Django's
+database. You write a process as a `.stm` machine, its actions as plain functions that use
+the ORM, and the machine's state, its queue and its timers live in your database, next to
+your models, in tables created by `migrate`. SQLite, PostgreSQL and MySQL are supported.
 
-**django-harel** connects [harel](https://github.com/acasadom/harel) statecharts to Django.
-You define your business process as a `.stm` state machine, wire action functions that touch
-your Django models, and let the included worker drive everything — with the Django ORM as the
-only infrastructure you need.
+## Two ways to run a machine
 
-## When to use it
+**In the request.** The request runs the event to the end — the transition and its actions —
+and answers with the machine's new state. There is no queue and no worker. This suits flows
+whose state the user moves on: a wizard, a checkout, an approval screen. Everything the step
+writes commits with the request's own transaction, or rolls back with it.
 
-Use django-harel when your domain is a **named set of states with explicit transitions** — an
-order, a subscription, a content approval flow, a device lifecycle — and you want:
+**In the background.** The request only *records* the event — in its own transaction, so a
+rolled-back request never sent it — and answers at once. A worker
+(`manage.py harel_worker`) runs it later. This is the Celery case: long-running processes,
+retries with back-off, waiting days for a webhook or a timeout, fan-out and join, periodic
+loops. A machine waiting for its next event is a row in the database; it costs nothing.
 
-- **No dual-write**: when the worker commits a state transition, it uses `DjangoStore`
-  which wraps the write in `transaction.atomic()`. Your action functions run inside that
-  same transaction — statechart state and domain model updates commit together or not at all.
-- **No extra infrastructure by default**: the event queue lives in your existing database
-  (`harel_queue` table), visible in Django admin. Switch to Redis for higher throughput —
-  at the cost of losing queue visibility in the admin.
-- **Background processing**: a `manage.py harel_worker` command reads events from the queue
-  and drives the machine asynchronously, calling your action functions.
+The two share the same tables, so one execution can use both: a wizard driven in the request
+that hands its heavy work to the workers when the user confirms.
 
-## Tutorial
+## When it fits — and when it doesn't
 
-The tutorial builds the article publishing app in `example/` step by step, from a blank
-Django project to a running API + worker.
+Use it when the work has **states**: an order, a subscription, a document review, a device's
+lifecycle, a payment waiting for its webhook. The `.stm` file is then the single place that
+says what happens next, instead of status fields, chained tasks and cron jobs.
+
+It is not a replacement for a one-line `send_email.delay()`: a one-state machine for a
+fire-and-forget call is more ceremony than it is worth.
 
 ```{toctree}
 :maxdepth: 1
@@ -39,18 +41,18 @@ tutorial/02-state-machine
 tutorial/03-actions
 tutorial/04-api
 tutorial/05-worker
+tutorial/06-in-the-request
 ```
-
-## Reference
 
 ```{toctree}
 :maxdepth: 1
 :caption: Reference
 
+reference/runners
+reference/worker
 reference/store
 reference/transport
-reference/runner
-reference/worker
 reference/admin
 reference/settings
+reference/testing
 ```

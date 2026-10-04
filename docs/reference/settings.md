@@ -1,76 +1,48 @@
-# Settings reference
+# Settings
 
-All django-harel settings live in a single `DJANGO_HAREL` dict in your `settings.py`.
+Everything lives in one `DJANGO_HAREL` dict:
 
 ```python
 DJANGO_HAREL = {
     "MACHINES": {
         "publishing": "articles/machines/publishing.stm",
-        "checkout":   "orders/machines/checkout.stm",
+        "checkout": "shop/machines/checkout.stm",
     },
-    "TRANSPORT":    "django",
-    "TRANSPORT_URL": "redis://localhost:6379",
-    "CONCURRENCY":  8,
-    "VISIBILITY":   30.0,
-    "WORKER_ID":    "worker-1",
+    "DATABASE": "default",
+    "TRACE": False,
+    "ON_ACTION_ERROR": "fail",
+    "VISIBILITY": 30.0,
+    "SUSPEND_RECHECK": 5.0,
+    "IDLE_SLEEP": 0.2,
+    "ATOMIC_STEP": True,
 }
 ```
 
-## Keys
+| Key | Default | |
+|---|---|---|
+| `MACHINES` | — (required) | machine name → `.stm` file; a relative path is relative to `BASE_DIR` |
+| `DATABASE` | `"default"` | the database alias harel's tables are in |
+| `TRACE` | `False` | record each execution's steps (shown in the admin) |
+| `ON_ACTION_ERROR` | `"fail"` | `durable_runner()`: `"fail"` dead-letters, `"raise"` raises to the caller |
+| `VISIBILITY` | `30.0` | worker: seconds a claimed event stays leased |
+| `SUSPEND_RECHECK` | `5.0` | worker: seconds before a suspended execution's event is looked at again |
+| `IDLE_SLEEP` | `0.2` | worker: seconds to wait when there's nothing to do |
+| `ATOMIC_STEP` | `True` | worker: one transaction per event (see [the worker](worker)) |
 
-### `MACHINES` *(required for the worker)*
+The machines are loaded and validated once per process, on first use. Changing
+`DJANGO_HAREL` with `override_settings` reloads them.
 
-```python
-"MACHINES": {"machine_name": "path/to/machine.stm", ...}
-```
+## SQLite
 
-A dict mapping machine names to `.stm` file paths. Paths are relative to the directory
-where you run `manage.py`. The worker loads every machine listed here at startup.
-
-### `TRANSPORT`
-
-```python
-"TRANSPORT": "django"   # default
-"TRANSPORT": "redis"
-```
-
-Selects the event queue backend. `"django"` uses the `harel_queue` database table
-(default, no extra dependencies). `"redis"` uses harel's `RedisTransport` — requires the
-`redis` package and `TRANSPORT_URL`.
-
-### `TRANSPORT_URL`
+A worker and a web server on one SQLite file both write to it. Let them wait for each other
+instead of failing with "database is locked":
 
 ```python
-"TRANSPORT_URL": "redis://localhost:6379"
+DATABASES = {
+    "default": {
+        "ENGINE": "django.db.backends.sqlite3",
+        "NAME": BASE_DIR / "db.sqlite3",
+        "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
+    }
+}
 ```
-
-Connection URL for the Redis transport. Only used when `TRANSPORT` is `"redis"`.
-
-### `CONCURRENCY`
-
-```python
-"CONCURRENCY": 8   # default
-```
-
-Maximum number of events the worker processes simultaneously. Each event runs in a
-`sync_to_async` thread. Tune based on your database connection pool size.
-
-### `VISIBILITY`
-
-```python
-"VISIBILITY": 30.0   # default, seconds
-```
-
-How long the worker holds a lease on a claimed event. If the worker crashes before
-`ack()`-ing the event, it becomes available again after this window. Set it longer than
-your slowest action.
-
-### `WORKER_ID`
-
-```python
-"WORKER_ID": "worker-1"   # default: socket.gethostname()
-```
-
-A unique identifier for this worker process, stored in `locked_by` on claimed events.
-Defaults to the machine hostname. Set explicitly when running multiple workers on the
-same host.
