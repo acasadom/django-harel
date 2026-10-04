@@ -21,6 +21,12 @@ With `ATOMIC_STEP`, claiming an event, what its actions write, the machine's ste
 acknowledgement commit together. A worker that dies mid-event leaves nothing behind, and the
 event is claimable again immediately.
 
+If another writer moved the execution on while the event ran — a request that advanced it in
+the meantime — the step's commit loses its version check, and the whole step rolls back too: its
+actions wrote for a state that no longer holds. The event then runs again from the new state.
+Inside that transaction the worker's store and queue write without savepoints, which saves a
+quarter of its queries.
+
 The transaction stays open while the actions run. On SQLite that holds the database's single
 write lock for that long; keep actions short there, or set `ATOMIC_STEP = False` — then each
 write commits on its own, and an event whose worker died comes back when its lease ends.
@@ -33,26 +39,22 @@ whatever the number of workers.
 
 ## Throughput
 
-An event costs about twenty short queries — claim, load, the actions' own writes, the commit,
+An event costs about fourteen short queries — claim, load, the actions' own writes, the commit,
 the acknowledgement — so a worker's pace is set by the round-trip to the database and by how
-fast it commits. Measured with `bench/run.py` (10,000 queued executions of a three-step machine,
+fast it commits. Measured with `bench/run.py` (5,000 queued executions of a three-step machine,
 every action checked to have run exactly once), on a laptop with the servers in Docker:
 
 | Database | 1 worker | 4 workers | 8 workers |
 |---|---|---|---|
-| SQLite (local file) | ~1,200 events/s | ~1,100 | ~550 |
-| PostgreSQL 17 | ~130 | ~170–190 | ~400 |
-| MySQL 8.4 | ~85 | ~45 | ~250 |
-| MySQL 8.4, no binlog, `innodb_flush_log_at_trx_commit=2` | ~100 | ~260 | ~265 |
+| SQLite (local file) | ~1,170 events/s | ~1,110 | — |
+| PostgreSQL 17 | ~200 | ~465 | ~605 |
+| MySQL 8.4 | ~145 | ~275 | ~235 |
 
 Take them as orders of magnitude, not promises: the benchmark ran on the host against servers
 in Docker, so every query crossed Docker Desktop's port forwarding, and Docker's virtual disk
-makes every commit slow — MySQL, which syncs two logs per commit by default, suffers most. A
-claim costs the same whatever the backlog.
-
-harel's own PostgreSQL backends, measured the same way, run about 1.6× faster per worker
-(~210 events/s): they fold the claim, the acknowledgement and a plain commit into one call to a
-server-side function each, and don't run the step in one transaction.
+makes every commit slow — MySQL, which syncs two logs per commit by default, suffers most and
+stops scaling first. A claim costs the same whatever the backlog. harel's own PostgreSQL
+backends, measured the same way, run at about the same pace per worker (~210 events/s).
 
 **On SQLite, run one worker process.** SQLite has one writer at a time, so more processes add
 no throughput, and its lock isn't fair: with eight, the rate halves. harel measures the same of

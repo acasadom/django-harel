@@ -23,25 +23,34 @@ def _empty_tables():
             cur.execute(f"DELETE FROM {table}")
 
 
-def test_store_listing():
-    assert_listing_contract(DjangoStore(), ordered=True, ns="ls-")
+# with savepoints (the requests) and without (the worker, inside its own transaction per event)
+savepoints = pytest.mark.parametrize("savepoints", [True, False], ids=["savepoints", "no-savepoints"])
 
 
-def test_store_outbox():
-    assert_outbox_contract(DjangoStore(), ns="ob-")
+@savepoints
+def test_store_listing(savepoints):
+    assert_listing_contract(DjangoStore(savepoints=savepoints), ordered=True, ns="ls-")
 
 
-def test_store_purge():
-    assert_purge_contract(DjangoStore(), ns="pg-")
+@savepoints
+def test_store_outbox(savepoints):
+    assert_outbox_contract(DjangoStore(savepoints=savepoints), ns="ob-")
 
 
-def test_store_ids_with_prefix():
-    assert_ids_with_prefix_contract(DjangoStore(), ns="ip_%-")
+@savepoints
+def test_store_purge(savepoints):
+    assert_purge_contract(DjangoStore(savepoints=savepoints), ns="pg-")
 
 
-def test_transport():
+@savepoints
+def test_store_ids_with_prefix(savepoints):
+    assert_ids_with_prefix_contract(DjangoStore(savepoints=savepoints), ns="ip_%-")
+
+
+@savepoints
+def test_transport(savepoints):
     def make(clock):
         _empty_tables()
-        return DjangoTransport(clock=clock)
+        return DjangoTransport(clock=clock, savepoints=savepoints)
 
     assert_transport_contract(make)

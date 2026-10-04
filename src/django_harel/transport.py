@@ -46,16 +46,26 @@ _SQLITE_CLAIM = (
 
 class DjangoTransport:
     """A `Transport` over the Django database `using` (default: `"default"`). `clock` gives
-    the lease deadlines (seconds since the epoch)."""
+    the lease deadlines (seconds since the epoch). `savepoints` as for `DjangoStore`."""
 
     # its writes go into the store's transaction when both use the same database
     shares_store_transaction = True
 
-    def __init__(self, using: str = DEFAULT_DB_ALIAS, clock: Callable[[], float] = time.time) -> None:
+    def __init__(
+        self,
+        using: str = DEFAULT_DB_ALIAS,
+        clock: Callable[[], float] = time.time,
+        *,
+        savepoints: bool = True,
+    ) -> None:
         self.using = using
         self._clock = clock
+        self.savepoints = savepoints
 
     # --- helpers -----------------------------------------------------------------------------
+    def _atomic(self) -> Any:
+        return transaction.atomic(using=self.using, savepoint=self.savepoints)
+
     @property
     def _connection(self) -> Any:
         return connections[self.using]
@@ -81,7 +91,7 @@ class DjangoTransport:
         """Enqueue `event` in `group_id`. `priority` counts on the group's first publish only."""
         payload = event.model_dump_json()
         vendor = self._vendor
-        with transaction.atomic(using=self.using):
+        with self._atomic():
             if vendor == "sqlite":
                 self._execute(
                     f"INSERT INTO {MESSAGES} (group_id, event) VALUES (%s, %s)", [group_id, payload]
@@ -111,10 +121,18 @@ class DjangoTransport:
             return self._claim_sqlite(worker_id, visibility, min_priority)
         return self._claim_group_lock(worker_id, visibility, min_priority)
 
+    def _doomed(self) -> bool:
+        """The caller's transaction is set to roll back (a worker step whose commit lost its
+        CAS): the rollback ends the lease it took, so there is nothing to ack or nack — and a
+        doomed transaction can't run another query."""
+        return self._connection.in_atomic_block and transaction.get_rollback(using=self.using)
+
     def ack(self, lease: Lease) -> None:
         """The message was handled: remove it and free its group."""
+        if self._doomed():
+            return
         if self._vendor == "sqlite":
-            with transaction.atomic(using=self.using):
+            with self._atomic():
                 self._execute(f"DELETE FROM {MESSAGES} WHERE seq = %s", [lease.seq])
                 self._execute(
                     f"DELETE FROM {GROUPS} WHERE group_id = %s AND NOT EXISTS "
@@ -122,7 +140,7 @@ class DjangoTransport:
                     [lease.group_id, lease.group_id],
                 )
             return
-        with transaction.atomic(using=self.using):
+        with self._atomic():
             holder = self._fetchone(
                 f"SELECT locked_by FROM {GROUPS} WHERE group_id = %s FOR UPDATE", [lease.group_id]
             )
@@ -146,6 +164,8 @@ class DjangoTransport:
 
     def nack(self, lease: Lease, delay: float = 0.0) -> None:
         """Return the message: claimable again at once, or parked for `delay` seconds."""
+        if self._doomed():
+            return
         if self._vendor == "sqlite":
             if delay > 0:
                 self._execute(
@@ -176,6 +196,7 @@ class DjangoTransport:
     def _claim_sqlite(self, worker_id: str, visibility: float, min_priority: int) -> Optional[Lease]:
         now = self._clock()
         try:
+            # always a savepoint: the lock error below is caught, and the transaction goes on
             with transaction.atomic(using=self.using):
                 row = self._fetchone(_SQLITE_CLAIM, [min_priority, now])
                 if row is None:
@@ -199,7 +220,7 @@ class DjangoTransport:
     def _claim_group_lock(self, worker_id: str, visibility: float, min_priority: int) -> Optional[Lease]:
         now = self._clock()
         token = f"{worker_id}:{uuid.uuid4().hex}"
-        with transaction.atomic(using=self.using):
+        with self._atomic():
             while True:
                 group_id = self._lock_claimable_group(now, min_priority)
                 if group_id is None:

@@ -45,13 +45,26 @@ def json_field(vendor: str, field: str) -> str:
 
 
 class DjangoStore:
-    """An `ExecutionStore` over the Django database `using` (default: `"default"`)."""
+    """An `ExecutionStore` over the Django database `using` (default: `"default"`).
 
-    def __init__(self, using: str = DEFAULT_DB_ALIAS, *, trace_max: int = DEFAULT_TRACE_MAX) -> None:
+    `savepoints` (default True): each write is a savepoint inside the caller's transaction, so a
+    failed one leaves the caller's transaction usable. The worker turns them off when it runs
+    each event in a transaction of its own, which any failure ends anyway — a round-trip less
+    for every write. Without them a lost CAS also dooms that transaction: the step's actions
+    wrote assuming a state that another writer has since moved on, so all of it rolls back —
+    their writes and the claim — and the event runs again from the fresh state."""
+
+    def __init__(
+        self, using: str = DEFAULT_DB_ALIAS, *, trace_max: int = DEFAULT_TRACE_MAX, savepoints: bool = True
+    ) -> None:
         self.using = using
         self.trace_max = trace_max
+        self.savepoints = savepoints
 
     # --- helpers -----------------------------------------------------------------------------
+    def _atomic(self) -> Any:
+        return transaction.atomic(using=self.using, savepoint=self.savepoints)
+
     @property
     def _connection(self) -> Any:
         return connections[self.using]
@@ -115,8 +128,11 @@ class DjangoStore:
             return None, False
         return Execution.model_validate_json(row[0]), bool(row[1])
 
-    def _write(self, exe: Execution) -> None:
-        """The version-CAS write of `exe`, inside the caller's atomic block."""
+    def _write(self, exe: Execution) -> Optional[StoreConflict]:
+        """The version-CAS write of `exe`, inside the caller's atomic block. A lost CAS is
+        *returned*, having written nothing, for the caller to raise once out of its atomic
+        block: raised inside one without a savepoint, it would doom the whole transaction —
+        and harel goes on using it (it nacks the message)."""
         old = exe.version
         exe.version = old + 1
         data = exe.model_dump_json()
@@ -125,29 +141,40 @@ class DjangoStore:
             [data, exe.version, exe.id, old],
         )
         if updated:
-            return
+            return None
         found = self._fetchone("SELECT version FROM harel_executions WHERE id = %s", [exe.id])
         if found is None and old == 0:
             try:
+                # always a savepoint: a concurrent create fails this INSERT, and the caller's
+                # transaction must survive it
                 with transaction.atomic(using=self.using):
                     self._execute(
                         "INSERT INTO harel_executions (id, definition_id, data, version) VALUES (%s, %s, %s, %s)",
                         [exe.id, exe.definition_id, data, exe.version],
                     )
-                return
+                return None
             except IntegrityError:
                 found = None  # another writer created it first
         exe.version = old
-        raise StoreConflict(exe.id, expected=old, found=found[0] if found else None)
+        return StoreConflict(exe.id, expected=old, found=found[0] if found else None)
 
     def save(self, exe: Execution) -> None:
         old = exe.version
         try:
-            with transaction.atomic(using=self.using):
-                self._write(exe)
+            with self._atomic():
+                conflict = self._write(exe)
         except BaseException:
             exe.version = old
             raise
+        if conflict is not None:
+            self._doom()
+            raise conflict
+
+    def _doom(self) -> None:
+        """Without savepoints, the caller's transaction is one step of the worker's: a lost CAS
+        rolls all of it back (see the class)."""
+        if not self.savepoints and self._connection.in_atomic_block:
+            transaction.set_rollback(True, using=self.using)
 
     def commit(
         self,
@@ -159,40 +186,57 @@ class DjangoStore:
         trace: Optional[dict] = None,
     ) -> list[int]:
         old = exe.version
+        seqs: list[int] = []
         try:
-            with transaction.atomic(using=self.using):
-                self._write(exe)
-                seqs = [
-                    self._insert_seq(
-                        "INSERT INTO harel_outbox (target_id, event) VALUES (%s, %s)",
-                        [target_id, event.model_dump_json()],
-                    )
-                    for target_id, event in emits
-                ]
-                if processed_event_id is not None:
-                    self._insert_ignore(
-                        "harel_processed_events", ("execution_id", "event_id"), [exe.id, processed_event_id]
-                    )
-                for child_id, root_path, context in spawns:
-                    self._execute(
-                        "INSERT INTO harel_spawns (parent_id, child_id, root_path, context) VALUES (%s, %s, %s, %s)",
-                        [exe.id, child_id, root_path, json.dumps(context)],
-                    )
-                for op in timers:
-                    self._execute(
-                        "DELETE FROM harel_timers WHERE execution_id = %s AND path = %s", [exe.id, op.path]
-                    )
-                    if op.action == "schedule":
-                        self._execute(
-                            "INSERT INTO harel_timers (execution_id, path, fire_at) VALUES (%s, %s, %s)",
-                            [exe.id, op.path, op.fire_at],
-                        )
-                if trace is not None:
-                    self._write_trace(exe.id, trace)
-            return seqs
+            with self._atomic():
+                conflict = self._write(exe)
+                if conflict is None:
+                    seqs = self._write_effects(exe, emits, processed_event_id, timers, spawns, trace)
         except BaseException:
             exe.version = old
             raise
+        if conflict is not None:
+            self._doom()
+            raise conflict
+        return seqs
+
+    def _write_effects(
+        self,
+        exe: Execution,
+        emits: list[tuple[Optional[str], Event]],
+        processed_event_id: Optional[str],
+        timers: tuple[TimerOp, ...],
+        spawns: tuple[tuple[str, str, dict], ...],
+        trace: Optional[dict],
+    ) -> list[int]:
+        """What a step writes besides the execution: its emits (returning their outbox seqs),
+        its dedupe record, its children, its timers and its trace."""
+        seqs = [
+            self._insert_seq(
+                "INSERT INTO harel_outbox (target_id, event) VALUES (%s, %s)",
+                [target_id, event.model_dump_json()],
+            )
+            for target_id, event in emits
+        ]
+        if processed_event_id is not None:
+            self._insert_ignore(
+                "harel_processed_events", ("execution_id", "event_id"), [exe.id, processed_event_id]
+            )
+        for child_id, root_path, context in spawns:
+            self._execute(
+                "INSERT INTO harel_spawns (parent_id, child_id, root_path, context) VALUES (%s, %s, %s, %s)",
+                [exe.id, child_id, root_path, json.dumps(context)],
+            )
+        for op in timers:
+            self._execute("DELETE FROM harel_timers WHERE execution_id = %s AND path = %s", [exe.id, op.path])
+            if op.action == "schedule":
+                self._execute(
+                    "INSERT INTO harel_timers (execution_id, path, fire_at) VALUES (%s, %s, %s)",
+                    [exe.id, op.path, op.fire_at],
+                )
+        if trace is not None:
+            self._write_trace(exe.id, trace)
+        return seqs
 
     def is_processed(self, execution_id: str, event_id: str) -> bool:
         row = self._fetchone(
@@ -244,7 +288,7 @@ class DjangoStore:
         return [r[0] for r in rows]
 
     def purge(self, execution_id: str, expected_version: int) -> bool:
-        with transaction.atomic(using=self.using):
+        with self._atomic():
             deleted = self._execute(
                 "DELETE FROM harel_executions WHERE id = %s AND version = %s",
                 [execution_id, expected_version],
@@ -276,7 +320,7 @@ class DjangoStore:
             )
 
     def append_trace(self, execution_id: str, entry: dict) -> None:
-        with transaction.atomic(using=self.using):
+        with self._atomic():
             self._write_trace(execution_id, entry)
 
     def read_trace(self, execution_id: str) -> list[dict]:

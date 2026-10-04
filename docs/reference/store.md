@@ -3,7 +3,7 @@
 ```python
 from django_harel import DjangoStore
 
-store = DjangoStore(using="default", trace_max=200)
+store = DjangoStore(using="default", trace_max=200, savepoints=True)
 ```
 
 harel's `ExecutionStore` over Django's database: an execution's state, the events it emitted,
@@ -18,6 +18,10 @@ transaction.
 
 Each write is checked against the execution's `version`: if another writer advanced it since
 it was loaded, the write raises `harel.StoreConflict` and changes nothing.
+
+With `savepoints=False` the writes skip the savepoint, and a lost version check marks the
+caller's transaction for rollback. That is for a transaction that is one unit of work and ends
+on any failure — the worker's step. Leave it on anywhere else.
 
 ## Reading
 

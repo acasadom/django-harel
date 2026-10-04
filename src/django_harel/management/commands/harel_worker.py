@@ -55,7 +55,8 @@ class Command(BaseCommand):
         idle_sleep = options["idle_sleep"] or conf.get_setting("IDLE_SLEEP")
 
         definitions = conf.definitions()
-        worker = conf.distributed_runner().worker(
+        atomic = conf.get_setting("ATOMIC_STEP")
+        worker = conf.worker_runner(atomic_step=atomic).worker(
             worker_id=worker_id,
             visibility=visibility,
             suspend_recheck=conf.get_setting("SUSPEND_RECHECK"),
@@ -69,7 +70,7 @@ class Command(BaseCommand):
                 worker,
                 stop,
                 idle_sleep,
-                atomic=conf.get_setting("ATOMIC_STEP"),
+                atomic=atomic,
                 using=conf.get_setting("DATABASE"),
             )
         finally:

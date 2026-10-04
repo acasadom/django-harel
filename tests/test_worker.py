@@ -123,6 +123,51 @@ def test_the_loop_reconnects_when_the_database_drops_it(caplog):
     assert Order.objects.get(pk=order.pk).status == "reserved"
 
 
+def test_a_lost_cas_rolls_the_whole_step_back(caplog):
+    """Between the worker's load and its commit another writer moves the execution on. The
+    step's actions have already written; its commit loses the CAS. All of it must roll back —
+    the actions' writes included — and the event run again: the stock is taken once."""
+    from harel.engine.distributed import DistributedRunner
+
+    from django_harel.store import DjangoStore
+    from django_harel.transport import DjangoTransport
+
+    class InterferedOnce(DjangoStore):
+        interfered = False
+
+        def load_for_event(self, execution_id, event_id):
+            loaded = super().load_for_event(execution_id, event_id)
+            if not InterferedOnce.interfered:
+                InterferedOnce.interfered = True
+                other = DjangoStore()  # another writer commits a step first
+                moved = other.load(execution_id)
+                other.save(moved)
+            return loaded
+
+    Stock.objects.create(item="widget", available=5)
+    order = Order.objects.create(item="widget", qty=2)
+    conf.distributed_runner().create("order", context={"order_id": order.pk}, execution_id="cas")
+
+    # the worker's backends, as `conf.worker_runner(atomic_step=True)` builds them
+    runner = DistributedRunner(
+        InterferedOnce(savepoints=False),
+        DjangoTransport(savepoints=False),
+        conf.definitions(),
+        execution="inline",
+    )
+    stop = threading.Event()
+    worker = CrashAfterStep(runner.worker(worker_id="w"), stop)
+    worker.ran = 1  # count the events, without crashing on the first
+    harel_worker.run(worker, stop, idle_sleep=0, atomic=True)
+
+    assert InterferedOnce.interfered
+    assert worker.ran == 3, "the Start ran twice: once rolled back, once for good"
+    assert "harel worker iteration failed" not in caplog.text
+    assert Stock.objects.get(pk="widget").available == 3
+    assert Order.objects.get(pk=order.pk).status == "reserved"
+    assert conf.distributed_runner().store.load("cas").active_path.endswith("AwaitingPayment")
+
+
 def test_the_loop_survives_a_failing_iteration(caplog):
     class Broken:
         calls = 0
@@ -151,6 +196,7 @@ def test_the_command_builds_its_worker_from_the_options(monkeypatch):
     call_command("harel_worker", "--worker-id", "w9", "--visibility", "12", "--idle-sleep", "0.5")
 
     assert seen["worker"].worker_id == "w9"
+    assert seen["worker"].store.savepoints is False  # its own transaction per event
     assert seen["worker"].execution == "inline"
     assert seen["idle"] == 0.5
     assert seen["atomic"] is True and seen["using"] == "default"

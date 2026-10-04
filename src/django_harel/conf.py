@@ -117,6 +117,24 @@ def distributed_runner() -> DistributedRunner:
     )
 
 
+def worker_runner(*, atomic_step: bool) -> DistributedRunner:
+    """A distributed runner for `manage.py harel_worker`, not shared with the requests. With
+    `atomic_step` the worker runs each event in a transaction of its own, which any failure ends:
+    its store and transport then write without savepoints."""
+    from django_harel.store import DjangoStore
+    from django_harel.transport import DjangoTransport
+
+    database = get_setting("DATABASE")
+    savepoints = not atomic_step
+    return DistributedRunner(
+        DjangoStore(database, savepoints=savepoints),
+        DjangoTransport(database, savepoints=savepoints),
+        definitions(),
+        trace=get_setting("TRACE"),
+        execution="inline",
+    )
+
+
 def reset() -> None:
     """Forget the loaded machines and the runners (they're rebuilt on next use)."""
     with _lock:
