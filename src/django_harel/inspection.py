@@ -26,16 +26,19 @@ def machine_for(exe: Execution) -> Optional[Definition]:
 
 
 def active_paths(exe: Execution, store: DjangoStore) -> list[str]:
-    """The states `exe` is in: its active state, and inside an orthogonal state, the one each
-    live region is in (a region is a child execution of the same machine)."""
-    paths = [exe.active_path] if exe.active_path else []
+    """The states `exe` is in: its active state — or, parked at an orthogonal state, the states
+    its live regions are in (each region is a child execution of the same machine), which say
+    more than the orthogonal state containing them all."""
+    regions = []
     for child_id, child in exe.children.items():
         if child.finished or child.submachine:
             continue
         region = store.load(child_id)
         if region is not None and region.active_path:
-            paths.extend(active_paths(region, store))
-    return paths
+            regions.extend(active_paths(region, store))
+    if regions:
+        return regions
+    return [exe.active_path] if exe.active_path else []
 
 
 @dataclass

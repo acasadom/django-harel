@@ -139,7 +139,9 @@ def test_regions_are_listed_with_their_states_and_linked(admin_client, widgets):
     body = _change_page(admin_client, exe.id)
 
     assert "<code>Fulfilling.Billing.Charging</code>" in body, "the region waiting for Paid"
-    assert "Fulfilling_Billing_Charging" in body.split("class ")[-1], "each region's state highlighted"
+    highlighted = body.split("class ")[-1].split(" active")[0].split(",")
+    assert "Fulfilling_Billing_Charging" in highlighted, "each region's state highlighted"
+    assert "Fulfilling" not in highlighted, "not the orthogonal state containing them"
     regions = [cid for cid, child in exe.children.items() if not child.submachine]
     assert len(regions) == 2
     for region_id in regions:

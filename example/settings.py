@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,6 +17,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django_harel",
     "articles",
+    "orders",
 ]
 
 MIDDLEWARE = [
@@ -39,14 +41,25 @@ TEMPLATES = [
     }
 ]
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "example.db",
-        # the worker and the server share the file: wait for its write lock instead of failing
-        "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
+if os.environ.get("DATABASE") == "postgres":  # compose.yaml
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "HOST": os.environ.get("POSTGRES_HOST", "localhost"),
+            "NAME": "harel",
+            "USER": "harel",
+            "PASSWORD": "harel",
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "example.db",
+            # the worker and the server share the file: wait for its write lock instead of failing
+            "OPTIONS": {"timeout": 20, "transaction_mode": "IMMEDIATE"},
+        }
+    }
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
@@ -57,6 +70,7 @@ USE_TZ = True
 DJANGO_HAREL = {
     "MACHINES": {
         "publishing": "articles/machines/publishing.stm",
+        "fulfilment": "orders/machines/fulfilment.stm",
     },
     "TRACE": True,
 }

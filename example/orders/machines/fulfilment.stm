@@ -1,0 +1,51 @@
+# An order's fulfilment. Shipping and billing run side by side (orthogonal regions):
+# shipping packs one parcel per item (a fan-out invoke), billing waits for the payment —
+# with a reminder after a while, and gives up later still (timers). Charging the card is an
+# action that raises when the card is refused: the billing region is then dead-lettered,
+# for an operator to fix the card and redrive it.
+import "parcel.stm" as parcels
+
+event Paid {}
+
+machine fulfilment {
+  context {
+    order_id: int
+    items: any
+  }
+
+  initial Fulfilling
+
+  orthogonal Fulfilling {
+    with { order_id: order_id  items: items }
+
+    state Shipping {
+      initial Packing
+      state Packing {
+        invoke parcels.parcel for item in items
+        with { order_id: order_id  item: item }
+      }
+      final Shipped success
+      final ShipFailed failed
+      from Packing join all to Shipped else to ShipFailed
+    }
+
+    state Billing {
+      initial AwaitingPayment
+      state AwaitingPayment { timeout 60 }
+      state Reminded { on enter orders.actions.remind  timeout 120 }
+      state Charging { on enter orders.actions.charge }
+      final Charged success
+      final Unpaid  abandoned
+      from AwaitingPayment to Charging on Paid
+      from AwaitingPayment to Reminded on Timeout
+      from Reminded        to Charging on Paid
+      from Reminded        to Unpaid   on Timeout
+      from Charging        to Charged
+    }
+  }
+
+  final Done   success   { on enter orders.actions.mark_fulfilled }
+  final Failed abandoned { on enter orders.actions.mark_abandoned }
+
+  from Fulfilling join all to Done else to Failed
+}

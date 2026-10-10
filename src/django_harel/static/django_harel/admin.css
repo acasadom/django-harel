@@ -1,7 +1,11 @@
 .harel-diagram { background: transparent; border: 0; overflow-x: auto; }
 .harel-table { border-collapse: collapse; margin: 0; }
 .harel-table th, .harel-table td { padding: 4px 10px 4px 0; vertical-align: top; text-align: left; }
+.harel-table td:first-child { white-space: nowrap; }
+/* an event's data or a context can be long: wrap it rather than widen the page */
 .harel-table code { white-space: nowrap; }
+.harel-table code.harel-data { white-space: normal; overflow-wrap: anywhere; }
+.harel-table td { max-width: 40em; }
 .harel-muted { color: var(--body-quiet-color); }
 .harel-alert { color: var(--error-fg); font-weight: bold; }
 .harel-active code { font-weight: bold; }

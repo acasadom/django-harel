@@ -39,7 +39,9 @@ def _pretty(value) -> str:
 
 
 def _compact(value) -> str:
-    return format_html("<code>{}</code>", json.dumps(value, sort_keys=True, default=str)) if value else "—"
+    if not value:
+        return "—"
+    return format_html('<code class="harel-data">{}</code>', json.dumps(value, sort_keys=True, default=str))
 
 
 # a fan-out can have thousands of children, a queue thousands of events: show the first ones

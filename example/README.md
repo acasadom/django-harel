@@ -1,25 +1,70 @@
-# django-harel example — article publishing workflow
+# django-harel example — articles and orders
 
-A minimal Django app that shows the two runtime modes of django-harel:
+A small Django app with two workflows. The **API** records what happens — an article
+submitted, an order paid — and a **worker** (`harel_worker`) runs the machines and their
+actions, which write the app's models.
 
-- **API** creates articles and enqueues editorial events (Submit, Approve, Reject).
-- **Worker** (`harel_worker`) reads from the queue, runs the statechart transitions,
-  and calls the action functions in `articles/actions.py` — which update `Article.status`,
-  `Article.reviewer_note`, and `Article.published_at` in the database.
+- **articles** — the publishing workflow the [tutorial](../docs/tutorial/01-installation.md)
+  builds: Draft → InReview → Published / Rejected.
+- **orders** — an order's fulfilment, to see the rest: shipping and billing side by side
+  (orthogonal regions), one parcel per item (a fan-out `invoke`), a payment reminder and a
+  give-up (timers), and a card refusal that dead-letters billing (for **Redrive**).
 
 ```
-articles/machines/publishing.stm   ← the statechart (Draft → InReview → Published/Rejected)
-articles/actions.py                ← Django ORM actions called by the worker
-articles/api.py                    ← django-ninja REST endpoints
-articles/models.py                 ← Article model
+articles/machines/publishing.stm   orders/machines/fulfilment.stm, parcel.stm   ← the machines
+articles/actions.py                orders/actions.py                            ← their actions
+articles/api.py                    orders/api.py                                ← the REST API
+articles/models.py                 orders/models.py                             ← the models (Workflow)
 ```
 
-## Setup
+## Run it with Docker
 
 ```bash
 cd example/
-python manage.py migrate
-python manage.py createsuperuser   # optional: to see the executions in /admin/
+docker compose up
+```
+
+That starts PostgreSQL, the web app and a worker, migrates, creates the user `admin` (password
+`admin`) and some demo data. Then open:
+
+- **http://localhost:8000/admin/** — *Harel Statecharts › Executions*
+- **http://localhost:8000/api/docs** — the API, to try it from the browser
+
+The repository is mounted into the containers, and so is the harel checkout next to it
+(`../../harel`, or set `HAREL_PATH`): edit either and reload the page; restart the worker
+(`docker compose restart worker`) to have it pick the change up. `docker compose down -v`
+throws the database away.
+
+### What to look at
+
+`seed_demo` leaves something in each situation:
+
+| | |
+|---|---|
+| article "A draft", "Under review", "Published" | the publishing workflow at each of its steps |
+| Dana's order | shipping done, billing **waiting for the payment** — a reminder timer is armed (after a minute the reminder fires, two minutes later the order is abandoned) |
+| Eve's order | paid: both regions done, the order **DONE** |
+| Frank's order | his card is refused: the billing region is **FAILED** |
+
+To bring Frank's order back: in *Orders*, tick his **card ok** and save; in *Executions*, filter
+on *failed*, select his billing region, run **Redrive**, pick
+`Fulfilling.Billing.AwaitingPayment`; then pay again:
+
+```bash
+curl -X POST http://localhost:8000/api/orders/3/pay
+```
+
+The worker charges the card, billing finishes, and the order is fulfilled.
+
+## Run it without Docker
+
+On SQLite (`example.db`), from the repository's environment:
+
+```bash
+cd example/
+uv run python manage.py migrate
+uv run python manage.py createsuperuser   # to see the executions in /admin/
+uv run python manage.py seed_demo         # optional: the demo data
 ```
 
 ## Run
@@ -28,10 +73,10 @@ You need **two terminals**:
 
 ```bash
 # terminal 1 — API server
-python manage.py runserver
+uv run python manage.py runserver
 
 # terminal 2 — statechart worker
-python manage.py harel_worker
+uv run python manage.py harel_worker
 ```
 
 ## Walk through the publishing flow

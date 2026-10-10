@@ -1,0 +1,59 @@
+# The example app on PostgreSQL, with its worker:
+#
+#     docker compose up
+#
+# then http://localhost:8000/admin/ (admin / admin) and http://localhost:8000/api/docs.
+# The repository and the harel checkout next to it (HAREL_PATH, default ../../harel) are
+# mounted: a change to either shows on the next request — restart `worker` to reload it.
+
+x-app: &app
+  build: .
+  entrypoint: ["/app/django-harel/example/entrypoint.sh"]
+  volumes:
+    - ..:/app/django-harel
+    - ${HAREL_PATH:-../../harel}:/app/harel
+    - uv-cache:/root/.cache/uv
+    - venv:/opt/venv
+  environment:
+    DATABASE: postgres
+    POSTGRES_HOST: db
+    DJANGO_SUPERUSER_USERNAME: admin
+    DJANGO_SUPERUSER_PASSWORD: admin
+    DJANGO_SUPERUSER_EMAIL: admin@example.com
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: harel
+      POSTGRES_PASSWORD: harel
+      POSTGRES_DB: harel
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "harel"]
+      interval: 2s
+      retries: 30
+
+  web:
+    <<: *app
+    command: ["web"]
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *app
+    command: ["worker"]
+    depends_on:
+      db:
+        condition: service_healthy
+      web:
+        condition: service_started
+
+volumes:
+  db:
+  uv-cache:
+  venv:
