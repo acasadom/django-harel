@@ -10,11 +10,26 @@ orthogonal regions or invoked children); search by id.
 
 ## The detail page
 
-Everything about one execution: status, outcome, state, the error that dead-lettered it,
-its timestamps, parent and children, its context, and its recent steps when tracing is on
-(`DJANGO_HAREL["TRACE"] = True`).
+Everything about one execution, in sections:
+
+- **Status, outcome, state** and the error that dead-lettered it, with its timestamps.
+- **Machine** — the machine's diagram, and the states the execution is in: inside an
+  orthogonal state, the one each region is in.
+- **Parent and children** — its orthogonal regions and invoked machines, each linked, with
+  where it is; and its parent, for a child.
+- **Waiting** — the events in its queue, oldest first, with the worker holding the one in
+  hand and until when; and its armed timers. A timer due over a minute ago and still not fired
+  is flagged: no worker is sweeping the timers.
+- **Timeline** — its steps, latest first: the event, the transition, the actions it ran and
+  what a `set` wrote. Recorded only with `DJANGO_HAREL["TRACE"] = True`.
+- **Context**, as JSON.
 
 Nothing here can be edited: only the machine changes an execution.
+
+The diagram is drawn in the browser by [Mermaid](https://mermaid.js.org), loaded from
+`DJANGO_HAREL["MERMAID_JS"]` — a CDN by default. For an admin without internet access, serve a
+copy of `mermaid.min.js` with your static files and point the setting at it. Without Mermaid
+the diagram's source shows as text.
 
 ## Actions
 

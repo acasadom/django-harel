@@ -15,6 +15,7 @@ DJANGO_HAREL = {
     "SUSPEND_RECHECK": 5.0,
     "IDLE_SLEEP": 0.2,
     "ATOMIC_STEP": True,
+    "MERMAID_JS": "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.min.js",
 }
 ```
 
@@ -28,6 +29,7 @@ DJANGO_HAREL = {
 | `SUSPEND_RECHECK` | `5.0` | worker: seconds before a suspended execution's event is looked at again |
 | `IDLE_SLEEP` | `0.2` | worker: seconds to wait when there's nothing to do |
 | `ATOMIC_STEP` | `True` | worker: one transaction per event (see [the worker](worker)) |
+| `MERMAID_JS` | Mermaid 11.15 on jsDelivr | admin: the script that draws the machines (see [the admin](admin)) |
 
 The machines are loaded and validated once per process, on first use. Changing
 `DJANGO_HAREL` with `override_settings` reloads them.

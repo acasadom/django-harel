@@ -9,18 +9,21 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
+from typing import Any
 
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
+from django.contrib.admin.utils import quote
 from django.db import connections
 from django.db.models.expressions import RawSQL
 from django.template.response import TemplateResponse
-from django.utils.html import format_html
+from django.urls import reverse
+from django.utils.html import format_html, format_html_join
 from harel import engine
 from harel.engine.control import PurgeRefused
-from harel.engine.execution import Status
+from harel.engine.execution import Execution, Status
 
-from django_harel import conf
+from django_harel import conf, inspection
 from django_harel.models import HarelExecution
 from django_harel.store import DjangoStore, json_field
 
@@ -33,6 +36,38 @@ def _when(timestamp) -> str:
 
 def _pretty(value) -> str:
     return format_html("<pre>{}</pre>", json.dumps(value, indent=2, sort_keys=True, default=str))
+
+
+def _compact(value) -> str:
+    return format_html("<code>{}</code>", json.dumps(value, sort_keys=True, default=str)) if value else "—"
+
+
+# a fan-out can have thousands of children, a queue thousands of events: show the first ones
+_MAX_ROWS = 50
+
+
+def _table(headers, rows, more: int = 0) -> str:
+    head = format_html_join("", "<th>{}</th>", ((h,) for h in headers))
+    body = format_html_join(
+        "", "<tr>{}</tr>", ((format_html_join("", "<td>{}</td>", ((c,) for c in row)),) for row in rows)
+    )
+    tail = format_html('<p class="harel-muted">… and {} more</p>', more) if more > 0 else ""
+    return format_html(
+        '<table class="harel-table"><thead><tr>{}</tr></thead><tbody>{}</tbody></table>{}', head, body, tail
+    )
+
+
+def _execution_link(execution_id: str) -> str:
+    url = reverse("admin:django_harel_harelexecution_change", args=[quote(execution_id)])
+    return format_html('<a href="{}"><code>{}</code></a>', url, execution_id)
+
+
+def diagram_source(defn, active: list[str]) -> str:
+    """The Mermaid source of `defn`'s diagram. `active` — the states the execution is in — is
+    for the highlight harel's renderer is gaining; until then the page lists them under it."""
+    from harel.viz.mermaid import render
+
+    return render(defn)
 
 
 class _JsonFieldFilter(admin.SimpleListFilter):
@@ -75,22 +110,16 @@ class RootsFilter(admin.SimpleListFilter):
 
 
 # the change page: everything read-only
-_DETAIL = (
-    "id",
-    "definition_id",
-    "status",
-    "outcome",
-    "active_state",
-    "error",
-    "created",
-    "updated",
-    "finished",
-    "parent",
-    "children",
-    "context",
-    "trace",
-    "version",
+_FIELDSETS: Any = (
+    (None, {"fields": ("id", "definition_id", "status", "outcome", "active_state", "error", "version")}),
+    ("When", {"fields": ("created", "updated", "finished")}),
+    ("Machine", {"fields": ("diagram",)}),
+    ("Parent and children", {"fields": ("tree",)}),
+    ("Waiting", {"fields": ("pending",)}),
+    ("Timeline", {"fields": ("timeline",)}),
+    ("Context", {"fields": ("context",)}),
 )
+_DETAIL = tuple(name for _, options in _FIELDSETS for name in options["fields"])
 
 
 @admin.register(HarelExecution)
@@ -100,8 +129,13 @@ class HarelExecutionAdmin(admin.ModelAdmin):
     search_fields = ["=id", "^id", "definition_id"]
     ordering = ["id"]
     list_per_page = 50
-    fields = _DETAIL
+    fieldsets = _FIELDSETS
     readonly_fields = _DETAIL
+
+    class Media:
+        js = (conf.get_setting("MERMAID_JS"), "django_harel/admin.js")
+        css = {"all": ("django_harel/admin.css",)}
+
     actions = ["suspend", "resume", "cancel", "terminate", "redrive", "purge"]
 
     # --- read-only ---------------------------------------------------------------------------
@@ -147,22 +181,121 @@ class HarelExecutionAdmin(admin.ModelAdmin):
     def finished(self, obj):
         return _when(obj.snapshot.get("finished_at"))
 
-    @admin.display(description="parent")
-    def parent(self, obj):
-        return obj.snapshot.get("parent_id") or "—"
-
-    @admin.display(description="children")
-    def children(self, obj):
-        return _pretty(obj.snapshot.get("children") or {})
-
     @admin.display(description="context")
     def context(self, obj):
         return _pretty(obj.snapshot.get("context") or {})
 
-    @admin.display(description="trace")
-    def trace(self, obj):
-        steps = DjangoStore(obj._state.db or "default").read_trace(obj.id)
-        return _pretty(steps) if steps else "— (recorded with DJANGO_HAREL['TRACE'] = True)"
+    # --- the machine, the tree, what it waits for, what it did ---------------------------------
+    def _store(self, obj) -> DjangoStore:
+        return DjangoStore(obj._state.db or "default")
+
+    @admin.display(description="diagram")
+    def diagram(self, obj):
+        exe = Execution.model_validate_json(obj.data)
+        defn = inspection.machine_for(exe)
+        if defn is None:
+            return format_html(
+                '<span class="harel-muted">{} isn\'t in DJANGO_HAREL["MACHINES"]</span>', exe.definition_id
+            )
+        active = inspection.active_paths(exe, self._store(obj))
+        return format_html(
+            '<pre class="harel-diagram">{}</pre><p class="harel-active">In: {}</p>',
+            diagram_source(defn, active),
+            format_html_join(", ", "<code>{}</code>", ((p,) for p in active)) if active else "—",
+        )
+
+    @admin.display(description="tree")
+    def tree(self, obj):
+        exe = Execution.model_validate_json(obj.data)
+        store = self._store(obj)
+        parts: list[str] = []
+        if exe.parent_id:
+            parts.append(format_html("<p>Parent: {}</p>", _execution_link(exe.parent_id)))
+        rows = []
+        for child_id, child in list(exe.children.items())[:_MAX_ROWS]:
+            loaded = store.load(child_id)
+            rows.append(
+                (
+                    _execution_link(child_id),
+                    "invoke" if child.submachine else "region",
+                    loaded.status.value if loaded else "—",
+                    loaded.active_path if loaded and loaded.active_path else "—",
+                    loaded.outcome if loaded and loaded.outcome else "—",
+                )
+            )
+        if rows:
+            parts.append(
+                _table(
+                    ("Child", "Kind", "Status", "State", "Outcome"), rows, more=len(exe.children) - len(rows)
+                )
+            )
+        if not parts:
+            return format_html('<span class="harel-muted">{}</span>', "— (a root, with no children)")
+        return format_html_join("", "{}", ((p,) for p in parts))
+
+    @admin.display(description="waiting")
+    def pending(self, obj):
+        using = obj._state.db or "default"
+        events = inspection.pending_events(obj.id, using, limit=_MAX_ROWS)
+        timers = inspection.armed_timers(obj.id, using)
+        parts: list[str] = []
+        if events:
+            parts.append(
+                _table(
+                    ("Queued event", "Id", "Data", "Held by", "Until"),
+                    [
+                        (
+                            format_html("<code>{}</code>", e.event.kind),
+                            e.event.id,
+                            _compact(e.event.data),
+                            e.held_by or "—",
+                            _when(e.held_until),
+                        )
+                        for e in events
+                    ],
+                )
+            )
+        if timers:
+            parts.append(
+                _table(
+                    ("Timer", "Fires at", ""),
+                    [
+                        (
+                            format_html("<code>{}</code>", t.path or "(machine)"),
+                            _when(t.fire_at),
+                            format_html(
+                                '<span class="harel-alert">{}</span>', "overdue — is a worker running?"
+                            )
+                            if t.overdue
+                            else "",
+                        )
+                        for t in timers
+                    ],
+                )
+            )
+        if not parts:
+            return format_html('<span class="harel-muted">{}</span>', "— (no queued event, no armed timer)")
+        return format_html_join("", "{}", ((p,) for p in parts))
+
+    @admin.display(description="timeline")
+    def timeline(self, obj):
+        steps = self._store(obj).read_trace(obj.id)
+        if not steps:
+            return format_html(
+                '<span class="harel-muted">{}</span>', "— (recorded with DJANGO_HAREL['TRACE'] = True)"
+            )
+        rows = [
+            (
+                _when(step.get("timestamp")),
+                format_html("<code>{}</code>", step.get("event_kind")),
+                _compact(step.get("event_data") or {}),
+                format_html("{} → {}", step.get("from_path") or "(start)", step.get("to_path") or "—"),
+                format_html_join(", ", "<code>{}</code>", ((a,) for a in step.get("actions") or ())) or "—",
+                _compact(step["assigned"]) if step.get("assigned") else "",
+            )
+            for step in reversed(steps)  # the latest first
+        ]
+        return _table(("When", "Event", "Data", "Transition", "Actions", "Set"), rows)
 
     # --- the control plane -------------------------------------------------------------------
     def _each(self, request, queryset, verb: str, command) -> None:
