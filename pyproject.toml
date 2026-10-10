@@ -79,3 +79,8 @@ check_untyped_defs = true
 
 [tool.django-stubs]
 django_settings_module = "tests.settings"
+
+[tool.uv.sources]
+# develop against the harel checkout next to this one (editable): a fix there is seen here at
+# once. Published metadata still says harel>=0.9.0; CI checks harel out at ../harel.
+harel = { path = "../harel", editable = true }

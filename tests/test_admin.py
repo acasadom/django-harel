@@ -127,6 +127,7 @@ def test_the_page_draws_the_machine_and_where_it_is(admin_client, widgets):
 
     assert '<pre class="harel-diagram">stateDiagram-v2' in body
     assert "In: <code>AwaitingPayment</code>" in body
+    assert "class AwaitingPayment active" in body, "highlighted in the diagram"
     assert "mermaid@11.15.0/dist/mermaid.min.js" in body and "django_harel/admin.js" in body
 
 
@@ -138,6 +139,7 @@ def test_regions_are_listed_with_their_states_and_linked(admin_client, widgets):
     body = _change_page(admin_client, exe.id)
 
     assert "<code>Fulfilling.Billing.Charging</code>" in body, "the region waiting for Paid"
+    assert "Fulfilling_Billing_Charging" in body.split("class ")[-1], "each region's state highlighted"
     regions = [cid for cid, child in exe.children.items() if not child.submachine]
     assert len(regions) == 2
     for region_id in regions:
@@ -180,3 +182,10 @@ def test_the_timeline_lists_the_recorded_steps(admin_client, widgets, settings):
     assert "AwaitingPayment → Paid" in body
     assert "<code>tests.app.actions.mark_paid</code>" in body
     assert body.index("AwaitingPayment → Paid") < body.index("(start) → AwaitingPayment"), "latest first"
+
+
+def test_a_state_the_machine_no_longer_has_is_drawn_without_the_highlight():
+    from django_harel.admin import diagram_source
+
+    source = diagram_source(conf.definitions()["order"], ["Removed"])
+    assert source.startswith("stateDiagram-v2") and "classDef active" not in source

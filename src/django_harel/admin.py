@@ -63,11 +63,14 @@ def _execution_link(execution_id: str) -> str:
 
 
 def diagram_source(defn, active: list[str]) -> str:
-    """The Mermaid source of `defn`'s diagram. `active` — the states the execution is in — is
-    for the highlight harel's renderer is gaining; until then the page lists them under it."""
+    """The Mermaid source of `defn`'s diagram, with the states in `active` highlighted. A state
+    the machine no longer has (its `.stm` changed since) is drawn without the highlight."""
     from harel.viz.mermaid import render
 
-    return render(defn)
+    try:
+        return render(defn, active=active)
+    except ValueError:
+        return render(defn)
 
 
 class _JsonFieldFilter(admin.SimpleListFilter):
