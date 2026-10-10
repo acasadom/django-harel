@@ -9,3 +9,5 @@
 .harel-muted { color: var(--body-quiet-color); }
 .harel-alert { color: var(--error-fg); font-weight: bold; }
 .harel-active code { font-weight: bold; }
+.harel-dashboard { width: 100%; margin-bottom: 2em; }
+.harel-dashboard th, .harel-dashboard td { white-space: normal; }

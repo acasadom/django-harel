@@ -183,6 +183,14 @@ def test_the_runners_come_from_the_settings(settings):
     assert set(conf.definitions()) == {"job"}
 
 
+def test_definitions_registers_invoked_submachines_without_building_a_runner_first():
+    """`fulfilment` invokes `parcels.parcel` (its FQN): resolvable the moment `definitions()`
+    is read, not only once some runner's constructor has mutated it (harel's own runners do
+    that registration too, but on a dict `conf` builds — nothing else must build one first)."""
+    assert "parcels.parcel" in conf.definitions()
+    assert conf.definitions()["parcels.parcel"].id == "parcels.parcel"
+
+
 # --- events are checked when they come in --------------------------------------------------------
 
 

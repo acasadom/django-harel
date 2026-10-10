@@ -67,6 +67,40 @@ POSTGRES_FUNCTIONS = (
     f"{PREFIX}_ack(text, bigint, text, double precision)",
 )
 
+# django-harel's own addition, outside harel's schema: when each queued message was published,
+# so the admin dashboard can show how long the oldest one has waited (harel's own schema has no
+# timestamp on a message). Keyed by the message's `seq`, written by `DjangoTransport.publish()`
+# and dropped by `ack()` along with the message — so a row's absence means either the message
+# was never tracked (published before this table existed) or it's gone.
+QUEUE_LOG = "django_harel_queue_log"
+
+_QUEUE_LOG_SQLITE = (
+    f"CREATE TABLE IF NOT EXISTS {QUEUE_LOG} (seq INTEGER PRIMARY KEY, published_at REAL NOT NULL)"
+)
+_QUEUE_LOG_POSTGRES = (
+    f"CREATE TABLE IF NOT EXISTS {QUEUE_LOG} (seq BIGINT PRIMARY KEY, published_at DOUBLE PRECISION NOT NULL)"
+)
+_QUEUE_LOG_MYSQL = f"CREATE TABLE IF NOT EXISTS {QUEUE_LOG} (seq BIGINT PRIMARY KEY, published_at DOUBLE NOT NULL) {_MYSQL_TABLE}"
+
+
+def queue_log_create_statement(vendor: str) -> str:
+    check_vendor(vendor)
+    if vendor == "sqlite":
+        return _QUEUE_LOG_SQLITE
+    if vendor == "postgresql":
+        return _QUEUE_LOG_POSTGRES
+    return _QUEUE_LOG_MYSQL
+
+
+def queue_log_drop_statement() -> str:
+    return f"DROP TABLE IF EXISTS {QUEUE_LOG}"
+
+
+# `TABLES` plus django-harel's own `QUEUE_LOG` — every table a test or a fixture should empty
+# between runs
+ALL_TABLES = TABLES + (QUEUE_LOG,)
+
+
 SUPPORTED_VENDORS = ("sqlite", "postgresql", "mysql")
 
 

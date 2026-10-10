@@ -24,7 +24,7 @@ from django.db import DEFAULT_DB_ALIAS, OperationalError, connections, transacti
 from harel.engine.transport.base import PARKED, Lease
 from harel.spec.states import Event
 
-from django_harel.schema import check_vendor
+from django_harel.schema import QUEUE_LOG, check_vendor
 
 MESSAGES = "harel_transport_messages"
 GROUPS = "harel_transport_groups"
@@ -86,6 +86,22 @@ class DjangoTransport:
             cur.execute(sql, params)
             return cur.fetchone()
 
+    def _insert_message(self, group_id: str, payload: str) -> int:
+        """Insert a queued message; return its `seq`."""
+        sql = f"INSERT INTO {MESSAGES} (group_id, event) VALUES (%s, %s)"
+        with self._connection.cursor() as cur:
+            if self._connection.features.can_return_columns_from_insert:
+                cur.execute(f"{sql} RETURNING seq", [group_id, payload])
+                return cur.fetchone()[0]
+            cur.execute(sql, [group_id, payload])
+            return cur.lastrowid
+
+    def _log_published(self, seq: int) -> None:
+        """When `seq` was published, for the dashboard's "oldest queued" (see
+        `django_harel.schema.QUEUE_LOG`) — outside harel's own schema, so a message published
+        before this table existed has no row, and its age shows as unknown rather than wrong."""
+        self._execute(f"INSERT INTO {QUEUE_LOG} (seq, published_at) VALUES (%s, %s)", [seq, self._clock()])
+
     # --- the protocol --------------------------------------------------------------------------
     def publish(self, group_id: str, event: Event, priority: int = 0) -> None:
         """Enqueue `event` in `group_id`. `priority` counts on the group's first publish only."""
@@ -93,13 +109,12 @@ class DjangoTransport:
         vendor = self._vendor
         with self._atomic():
             if vendor == "sqlite":
-                self._execute(
-                    f"INSERT INTO {MESSAGES} (group_id, event) VALUES (%s, %s)", [group_id, payload]
-                )
+                seq = self._insert_message(group_id, payload)
                 self._execute(
                     f"INSERT OR IGNORE INTO {GROUPS} (group_id, priority) VALUES (%s, %s)",
                     [group_id, priority],
                 )
+                self._log_published(seq)
                 return
             # create the group, or lock it if it's there (keeping its lease and priority)
             if vendor == "postgresql":
@@ -113,7 +128,8 @@ class DjangoTransport:
                     "VALUES (%s, NULL, NULL, %s) ON DUPLICATE KEY UPDATE priority = priority"
                 )
             self._execute(upsert, [group_id, priority])
-            self._execute(f"INSERT INTO {MESSAGES} (group_id, event) VALUES (%s, %s)", [group_id, payload])
+            seq = self._insert_message(group_id, payload)
+            self._log_published(seq)
 
     def claim(self, worker_id: str, visibility: float, min_priority: int = 0) -> Optional[Lease]:
         """Lease the head of the group that waited longest with nothing in flight."""
@@ -134,6 +150,7 @@ class DjangoTransport:
         if self._vendor == "sqlite":
             with self._atomic():
                 self._execute(f"DELETE FROM {MESSAGES} WHERE seq = %s", [lease.seq])
+                self._execute(f"DELETE FROM {QUEUE_LOG} WHERE seq = %s", [lease.seq])
                 self._execute(
                     f"DELETE FROM {GROUPS} WHERE group_id = %s AND NOT EXISTS "
                     f"(SELECT 1 FROM {MESSAGES} WHERE group_id = %s)",
@@ -147,6 +164,7 @@ class DjangoTransport:
             if holder is None or holder[0] != lease.token:
                 return  # the lease expired and another worker holds the group now
             self._execute(f"DELETE FROM {MESSAGES} WHERE seq = %s", [lease.seq])
+            self._execute(f"DELETE FROM {QUEUE_LOG} WHERE seq = %s", [lease.seq])
             # a locking read: it sees what publishes committed while we waited for the group
             more = self._fetchone(
                 f"SELECT seq FROM {MESSAGES} WHERE group_id = %s ORDER BY seq LIMIT 1 FOR UPDATE",

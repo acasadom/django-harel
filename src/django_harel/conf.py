@@ -73,6 +73,13 @@ def _load_definitions() -> dict[str, Definition]:
     for machine_id, path in machines.items():
         defn = definition_from_dsl_file(_machine_path(path), machine_id, validate=True)
         definitions[defn.id] = defn
+    # a machine's own `invoke`d submachines too, by their FQN — the runners need them to
+    # resolve a fan-out or single invoke without an external resolver (harel's own runners do
+    # this same registration, on the same dict, once built; doing it here too means every
+    # consumer of `definitions()` sees them, including one that runs before any runner is
+    # built, e.g. the admin dashboard)
+    for defn in list(definitions.values()):
+        definitions.update({s.id: s for s in defn.submachines.values()})
     return definitions
 
 

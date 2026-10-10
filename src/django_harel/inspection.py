@@ -9,19 +9,20 @@ from typing import Optional
 
 from django.db import connections
 from harel.definition.model import Definition
-from harel.engine.execution import Execution
+from harel.engine.execution import Execution, Status
 from harel.engine.transport.base import PARKED
 from harel.spec.states import Event
 
 from django_harel import conf
-from django_harel.store import DjangoStore
+from django_harel.schema import QUEUE_LOG
+from django_harel.store import DjangoStore, json_field
 from django_harel.transport import GROUPS, MESSAGES
 
 
 def machine_for(exe: Execution) -> Optional[Definition]:
     """The machine `exe` runs: its own, an orthogonal region's (its parent's machine), or the
-    submachine an `invoke` started. None for one not in `DJANGO_HAREL['MACHINES']`."""
-    conf.distributed_runner()  # builds the runner, which registers every submachine by id
+    submachine an `invoke` started (`conf.definitions()` registers those too). None for one not
+    reachable from `DJANGO_HAREL['MACHINES']`."""
     return conf.definitions().get(exe.definition_id)
 
 
@@ -103,3 +104,79 @@ def armed_timers(execution_id: str, using: str = "default") -> list[ArmedTimer]:
             "SELECT path, fire_at FROM harel_timers WHERE execution_id = %s ORDER BY fire_at", [execution_id]
         )
         return [ArmedTimer(path, float(fire_at)) for path, fire_at in cur.fetchall()]
+
+
+# --- the dashboard: one row per machine --------------------------------------------------------
+
+
+@dataclass
+class MachineSummary:
+    """One machine's row on the dashboard."""
+
+    definition_id: str
+    counts: dict[str, int]  # Status.value -> count, every status present (0 if none)
+    failed_ids: list[str]  # oldest first, up to _MAX_FAILED
+    failed_more: int  # how many more FAILED beyond failed_ids
+    queued: int  # events waiting across this machine's executions
+    oldest_queued_age: Optional[float]  # seconds since the oldest was published; None if queued == 0
+    overdue_timers: int  # armed past OVERDUE_AFTER and not yet fired
+
+
+_MAX_FAILED = 10
+
+
+def machine_summary(definition_id: str, using: str = "default") -> MachineSummary:
+    connection = connections[using]
+    status_col = json_field(connection.vendor, "status")
+    now = time.time()
+
+    with connection.cursor() as cur:
+        cur.execute(
+            f"SELECT {status_col}, COUNT(*) FROM harel_executions WHERE definition_id = %s GROUP BY {status_col}",
+            [definition_id],
+        )
+        counts = {s.value: 0 for s in Status}
+        for status, count in cur.fetchall():
+            counts[status] = count
+        total_failed = counts[Status.FAILED.value]
+
+        cur.execute(
+            "SELECT id FROM harel_executions WHERE definition_id = %s "
+            f"AND {status_col} = %s ORDER BY id LIMIT %s",
+            [definition_id, Status.FAILED.value, _MAX_FAILED],
+        )
+        failed_ids = [r[0] for r in cur.fetchall()]
+
+        cur.execute(
+            f"SELECT COUNT(*), MIN(p.published_at) FROM {MESSAGES} m "
+            f"JOIN harel_executions e ON e.id = m.group_id "
+            f"LEFT JOIN {QUEUE_LOG} p ON p.seq = m.seq "
+            "WHERE e.definition_id = %s",
+            [definition_id],
+        )
+        queued, oldest_published = cur.fetchone()
+        oldest_age = now - oldest_published if oldest_published is not None else None
+
+        cur.execute(
+            "SELECT COUNT(*) FROM harel_timers t JOIN harel_executions e ON e.id = t.execution_id "
+            "WHERE e.definition_id = %s AND t.fire_at < %s",
+            [definition_id, now - OVERDUE_AFTER],
+        )
+        overdue_timers = cur.fetchone()[0]
+
+    return MachineSummary(
+        definition_id=definition_id,
+        counts=counts,
+        failed_ids=failed_ids,
+        failed_more=max(0, total_failed - len(failed_ids)),
+        queued=queued or 0,
+        oldest_queued_age=oldest_age,
+        overdue_timers=overdue_timers,
+    )
+
+
+def dashboard(using: str = "default") -> list[MachineSummary]:
+    """One `MachineSummary` per machine `conf.definitions()` knows: every entry in
+    `DJANGO_HAREL['MACHINES']`, and the submachines they `invoke` — a fan-out's parcel, say —
+    since those run as their own executions under their own id too."""
+    return [machine_summary(definition_id, using) for definition_id in conf.definitions()]

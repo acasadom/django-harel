@@ -191,3 +191,114 @@ def test_a_state_the_machine_no_longer_has_is_drawn_without_the_highlight():
 
     source = diagram_source(conf.definitions()["order"], ["Removed"])
     assert source.startswith("stateDiagram-v2") and "classDef active" not in source
+
+
+# --- the dashboard --------------------------------------------------------------------------------
+
+
+DASHBOARD = "admin:django_harel_dashboard"
+
+
+class Clock:
+    def __init__(self, now: float = 1_000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_the_dashboard_lists_every_configured_machine(admin_client, jobs):
+    page = admin_client.get(reverse(DASHBOARD))
+    assert page.status_code == 200
+    body = page.content.decode()
+    for definition_id in ("job", "order", "fulfilment"):
+        assert f"<h2>{definition_id}" in body
+    assert "PENDING: 1" not in body  # jobs fixture creates no PENDING job
+
+
+def test_the_dashboard_shows_status_counts_linked_to_the_filtered_list(admin_client, jobs):
+    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    assert "RUNNING: 1" in body
+    assert "DONE: 1" in body
+    assert "definition_id=job&amp;status=RUNNING" in body or "definition_id=job&status=RUNNING" in body
+
+
+def test_a_failed_execution_is_linked_and_overflow_is_counted(admin_client):
+    from tests.app.models import Order, Stock
+
+    Stock.objects.create(item="widget", available=1)
+    runner = conf.durable_runner()
+    failed_ids = [
+        runner.create("order", context={"order_id": Order.objects.create(item="widget", qty=5).pk}).id
+        for _ in range(12)
+    ]
+
+    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    assert "FAILED: 12" in body
+    shown, hidden = sorted(failed_ids)[:10], sorted(failed_ids)[10:]
+    for execution_id in shown:
+        assert execution_id in body
+    for execution_id in hidden:
+        assert execution_id not in body
+    assert "… and 2 more" in body
+
+
+def test_the_queue_size_and_oldest_age_are_shown(admin_client, monkeypatch):
+    """The dashboard reads "now" from `time.time()` (it isn't tied to any one runner's clock),
+    so the fake clock here stands in for it too — `inspection.time.time` is patched to it."""
+    from harel.engine.distributed import DistributedRunner
+
+    import django_harel.inspection as inspection
+    from django_harel.store import DjangoStore
+    from django_harel.transport import DjangoTransport
+
+    clock = Clock()
+    monkeypatch.setattr(inspection.time, "time", clock)
+    runner_store, transport = DjangoStore(), DjangoTransport(clock=clock)
+    runner = DistributedRunner(runner_store, transport, conf.definitions(), clock=clock, execution="inline")
+    runner.create("job", execution_id="waiting", start_on_create=True)
+
+    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    assert "1 queued" in body
+
+    clock.now += 125  # 2m 5s later: nothing drained it (no worker ran)
+    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    assert "1 queued" in body and "oldest waiting" in body and "2m 5s" in body
+
+
+def test_overdue_timers_are_flagged(admin_client):
+    from django.db import connection
+
+    from tests.app.models import Order, Stock
+
+    Stock.objects.create(item="widget", available=5)
+    runner = conf.distributed_runner()
+    order = Order.objects.create(item="widget", qty=1)
+    exe = runner.create("order", context={"order_id": order.pk})
+    runner.worker(worker_id="w").step()  # runs Start: AwaitingPayment arms its 60s timeout
+
+    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    assert "none overdue" in body
+
+    with connection.cursor() as cur:
+        cur.execute("UPDATE harel_timers SET fire_at = fire_at - 3660 WHERE execution_id = %s", [exe.id])
+    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    assert "1 overdue — is a worker running?" in body
+
+
+def test_a_viewer_can_see_the_dashboard_without_operate_permission(client, jobs):
+    viewer = User.objects.create_user("viewer2", password="x", is_staff=True)
+    viewer.user_permissions.add(Permission.objects.get(codename="view_harelexecution"))
+    client.force_login(viewer)
+    assert client.get(reverse(DASHBOARD)).status_code == 200
+
+
+def test_someone_without_view_permission_is_refused(client, jobs):
+    plain = User.objects.create_user("plain", password="x", is_staff=True)
+    client.force_login(plain)
+    assert client.get(reverse(DASHBOARD)).status_code == 403
+
+
+def test_the_changelist_links_to_the_dashboard(admin_client):
+    body = admin_client.get(reverse(CHANGELIST)).content.decode()
+    assert reverse(DASHBOARD) in body

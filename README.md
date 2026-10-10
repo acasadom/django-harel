@@ -97,9 +97,11 @@ order.checkout.process("Pay", token=token)  # in the request: runs now, in this 
 `Workflow` ties a machine to a model; the runners underneath (`distributed_runner()`,
 `durable_runner()`) work for executions that don't belong to a row.
 
-Executions are listed in the Django admin, where you can also suspend, resume, cancel,
-terminate or purge them. Signals (`step_committed`, `execution_finished`, `execution_failed`)
-tell your code about every committed step — only once its transaction has committed.
+Executions are listed in the Django admin — with a dashboard, one row per machine, that flags a
+queue nothing is draining or a timer nothing is firing — where you can also suspend, resume,
+cancel, terminate or purge them. Signals (`step_committed`, `execution_finished`,
+`execution_failed`) tell your code about every committed step — only once its transaction has
+committed.
 
 ## Example
 

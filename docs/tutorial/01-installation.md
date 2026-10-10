@@ -60,6 +60,10 @@ harel's own schema, with every table prefixed `harel_`:
 On SQLite and PostgreSQL these are exactly the tables harel's own backends create, so harel's
 tools can read them too.
 
+One table is django-harel's own, outside harel's schema: `django_harel_queue_log` records when
+each queued message was published, for the admin dashboard's "oldest waiting" — harel's own
+schema has no timestamp on a message.
+
 ```{note}
 If your test suite uses `TransactionTestCase` (or `pytest.mark.django_db(transaction=True)`),
 Django's flush between tests leaves these tables alone — no model of yours owns them. See

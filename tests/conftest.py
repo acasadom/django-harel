@@ -14,8 +14,8 @@ def _empty_harel_tables(request):
         return
     from django.db import connection
 
-    from django_harel.schema import TABLES
+    from django_harel.schema import ALL_TABLES
 
     with connection.cursor() as cur:
-        for table in TABLES:
+        for table in ALL_TABLES:
             cur.execute(f"DELETE FROM {table}")

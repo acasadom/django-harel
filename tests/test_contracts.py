@@ -10,7 +10,7 @@ from harel.testing import (
 )
 from harel.testing.purge import assert_ids_with_prefix_contract
 
-from django_harel.schema import TABLES
+from django_harel.schema import ALL_TABLES
 from django_harel.store import DjangoStore
 from django_harel.transport import DjangoTransport
 
@@ -19,7 +19,7 @@ pytestmark = pytest.mark.django_db(transaction=True)
 
 def _empty_tables():
     with connection.cursor() as cur:
-        for table in TABLES:
+        for table in ALL_TABLES:
             cur.execute(f"DELETE FROM {table}")
 
 

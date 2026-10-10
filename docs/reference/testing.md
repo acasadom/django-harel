@@ -9,12 +9,12 @@ yourself:
 
 ```python
 from django.db import connection
-from django_harel.schema import TABLES
+from django_harel.schema import ALL_TABLES
 
 
 def empty_harel_tables():
     with connection.cursor() as cur:
-        for table in TABLES:
+        for table in ALL_TABLES:
             cur.execute(f"DELETE FROM {table}")
 ```
 

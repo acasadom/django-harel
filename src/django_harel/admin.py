@@ -14,10 +14,11 @@ from typing import Any
 from django.contrib import admin, messages
 from django.contrib.admin import helpers
 from django.contrib.admin.utils import quote
+from django.core.exceptions import PermissionDenied
 from django.db import connections
 from django.db.models.expressions import RawSQL
 from django.template.response import TemplateResponse
-from django.urls import reverse
+from django.urls import path, reverse
 from django.utils.html import format_html, format_html_join
 from harel import engine
 from harel.engine.control import PurgeRefused
@@ -156,6 +157,29 @@ class HarelExecutionAdmin(admin.ModelAdmin):
     def has_operate_permission(self, request):
         """Who may run the control-plane actions: whoever may change an execution."""
         return request.user.has_perm("django_harel.change_harelexecution")
+
+    # --- the dashboard -------------------------------------------------------------------------
+    def get_urls(self):
+        urls = [
+            path("dashboard/", self.admin_site.admin_view(self.dashboard_view), name="django_harel_dashboard")
+        ]
+        return urls + super().get_urls()
+
+    def dashboard_view(self, request):
+        """One row per machine (see `inspection.dashboard`): how many executions in each
+        status, its failed ones linked, how big its queue is and how long the oldest message
+        has waited, and timers overdue — the signal that no worker is running."""
+        if not self.has_view_permission(request):
+            raise PermissionDenied
+        using = conf.get_setting("DATABASE")
+        rows = [_dashboard_row(summary) for summary in inspection.dashboard(using)]
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Dashboard",
+            "opts": self.model._meta,
+            "rows": rows,
+        }
+        return TemplateResponse(request, "admin/django_harel/dashboard.html", context)
 
     # --- columns -----------------------------------------------------------------------------
     @admin.display(description="status")
@@ -396,3 +420,51 @@ def _redrive_targets(defn, executions) -> list[str]:
         if node.outcome is None
         and all(engine.is_valid_reposition_target(defn, e, node.full_path) for e in executions)
     )
+
+
+def _changelist_url(**filters) -> str:
+    url = reverse("admin:django_harel_harelexecution_changelist")
+    if filters:
+        from urllib.parse import urlencode
+
+        url += "?" + urlencode(filters)
+    return url
+
+
+def _humanize_age(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds}s"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def _dashboard_row(summary) -> dict:
+    """A `MachineSummary` as the dashboard template renders it: counts linked to the filtered
+    changelist, failed executions linked individually, the queue's age humanized."""
+    counts = [
+        {
+            "status": status,
+            "count": count,
+            "url": _changelist_url(definition_id=summary.definition_id, status=status) if count else None,
+        }
+        for status, count in summary.counts.items()
+        if count or status in ("RUNNING", "FAILED")  # always shown: what you come here to check
+    ]
+    return {
+        "definition_id": summary.definition_id,
+        "total": sum(summary.counts.values()),
+        "counts": counts,
+        "failed_links": [_execution_link(i) for i in summary.failed_ids],
+        "failed_more": summary.failed_more,
+        "failed_url": _changelist_url(definition_id=summary.definition_id, status="FAILED"),
+        "queued": summary.queued,
+        "oldest_queued_age": _humanize_age(summary.oldest_queued_age) if summary.oldest_queued_age else None,
+        "overdue_timers": summary.overdue_timers,
+    }

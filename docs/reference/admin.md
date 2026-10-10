@@ -1,6 +1,26 @@
 # Admin
 
-With `django.contrib.admin` installed, **Harel › Executions** lists every execution.
+With `django.contrib.admin` installed, **Harel › Executions** lists every execution, and its
+**Dashboard** gives one row per machine.
+
+## The dashboard
+
+**Executions › Dashboard** is the one-screen operator view — what you check first, and what
+you'd watch after a deploy. One row per machine `conf.definitions()` knows: every entry in
+`DJANGO_HAREL["MACHINES"]`, and the submachines they `invoke` (a fan-out's parcel, say — it
+runs as its own executions, under its own id).
+
+Each row has:
+
+- its executions **by status**, each count linked to the filtered list;
+- its **failed** executions, linked (up to 10, with how many more);
+- its **queue**: how many events are waiting, and how long the oldest has waited;
+- its **timers**: how many are overdue — fired over a minute ago and still not delivered.
+
+A nonempty queue that never shrinks, or an overdue-timers count that only grows, both say the
+same thing: **no worker is running** for that machine (or it's stuck). That's the single most
+useful thing this page tells you, and it needs nothing instrumented — it reads the same tables
+`manage.py harel_worker` does.
 
 ## The list
 

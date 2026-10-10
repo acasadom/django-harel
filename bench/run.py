@@ -33,7 +33,7 @@ from django.db import connection, transaction  # noqa: E402
 from harel.spec.states import Event  # noqa: E402
 
 from django_harel import distributed_runner  # noqa: E402
-from django_harel.schema import TABLES  # noqa: E402
+from django_harel.schema import ALL_TABLES  # noqa: E402
 from tests.app.models import Tick  # noqa: E402
 
 
@@ -63,7 +63,7 @@ def main() -> int:
 
     call_command("migrate", verbosity=0)
     with connection.cursor() as cur:
-        for table in TABLES:
+        for table in ALL_TABLES:
             cur.execute(f"DELETE FROM {table}")
     Tick.objects.all().delete()
     connection.close()
