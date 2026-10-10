@@ -1,0 +1,108 @@
+{% extends "admin/base_site.html" %}
+{% load i18n admin_urls %}
+
+{% block extrahead %}
+  {{ block.super }}
+  {{ media }}
+{% endblock %}
+
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">{% translate 'Home' %}</a>
+  &rsaquo; <a href="{% url 'admin:app_list' app_label=opts.app_label %}">{{ opts.app_config.verbose_name }}</a>
+  &rsaquo; <a href="{% url 'admin:django_harel_machines' %}">Machines</a>
+  &rsaquo; {{ definition_id }}
+</div>
+{% endblock %}
+
+{% block content %}
+<pre class="harel-diagram">{{ diagram }}</pre>
+
+{% if facts.invokes or facts.orthogonal %}
+<h2>Shape</h2>
+<ul>
+  {% for f in facts.orthogonal %}
+  <li><code>{{ f.state }}</code> forks into: {% for r in f.regions %}<code>{{ r }}</code>{% if not forloop.last %}, {% endif %}{% endfor %}</li>
+  {% endfor %}
+  {% for f in facts.invokes %}
+  <li><code>{{ f.state }}</code> invokes {% if f.url %}<a href="{{ f.url }}">{{ f.target }}</a>{% else %}<code>{{ f.target }}</code> <span class="harel-muted">(not in DJANGO_HAREL['MACHINES'])</span>{% endif %}</li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+<h2>Right now</h2>
+<table class="harel-table harel-wide-table">
+  <thead>
+    <tr>
+      <th>By status</th>
+      <th>Failed</th>
+      <th>Queue</th>
+      <th>Timers</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>
+        {% for c in row.counts %}
+          {% if c.url %}<a href="{{ c.url }}">{{ c.status }}: {{ c.count }}</a>{% else %}{{ c.status }}: {{ c.count }}{% endif %}{% if not forloop.last %}, {% endif %}
+        {% endfor %}
+      </td>
+      <td>
+        {% if row.failed_links %}
+          {% for link in row.failed_links %}{{ link }}{% if not forloop.last %}, {% endif %}{% endfor %}
+          {% if row.failed_more %}<a href="{{ row.failed_url }}" class="harel-muted">… and {{ row.failed_more }} more</a>{% endif %}
+        {% else %}
+          <span class="harel-muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if row.queued %}
+          {{ row.queued }} queued{% if row.oldest_queued_age %}, oldest waiting <strong>{{ row.oldest_queued_age }}</strong>{% endif %}
+        {% else %}
+          <span class="harel-muted">— empty</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if row.overdue_timers %}
+          <span class="harel-alert">{{ row.overdue_timers }} overdue — is a worker running?</span>
+        {% else %}
+          <span class="harel-muted">none overdue</span>
+        {% endif %}
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Top-level executions</h2>
+<p class="harel-muted">
+  Its roots, and any invoked submachine's own entry point — never a bare orthogonal region,
+  which only makes sense inside its own unit's tree.
+</p>
+{% if units %}
+<table class="harel-table harel-wide-table">
+  <thead>
+    <tr>
+      <th>Execution</th>
+      <th>Status</th>
+      <th>State</th>
+      <th>Outcome</th>
+      <th>Failed inside</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for u in units %}
+    <tr>
+      <td>{{ u.link }}</td>
+      <td>{{ u.status }}</td>
+      <td>{{ u.active_path }}</td>
+      <td>{{ u.outcome }}</td>
+      <td>{% if u.failed_descendants %}<span class="harel-alert">{{ u.failed_descendants }}</span>{% else %}—{% endif %}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% if units_more %}<p class="harel-muted">… and {{ units_more }} more</p>{% endif %}
+{% else %}
+<p class="harel-muted">— no executions of this machine yet</p>
+{% endif %}
+{% endblock %}

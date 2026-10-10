@@ -8,14 +8,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 from django.db import connections
-from harel.definition.model import Definition
+from harel.definition.model import Definition, NodeKind
 from harel.engine.execution import Execution, Status
 from harel.engine.transport.base import PARKED
 from harel.spec.states import Event
 
 from django_harel import conf
 from django_harel.schema import QUEUE_LOG
-from django_harel.store import DjangoStore, json_field
+from django_harel.store import DjangoStore, json_field, like_prefix
 from django_harel.transport import GROUPS, MESSAGES
 
 
@@ -180,3 +180,152 @@ def dashboard(using: str = "default") -> list[MachineSummary]:
     `DJANGO_HAREL['MACHINES']`, and the submachines they `invoke` — a fan-out's parcel, say —
     since those run as their own executions under their own id too."""
     return [machine_summary(definition_id, using) for definition_id in conf.definitions()]
+
+
+# --- a machine's shape, independent of any execution --------------------------------------------
+
+
+@dataclass
+class StructuralFacts:
+    """What a `Definition` is shaped like: where it invokes other machines, and which of its
+    states are orthogonal (fork into regions) — static, the same for every execution of it."""
+
+    invokes: list[tuple[str, str]]  # (state's full_path, target FQN) — one per `invoke`, fan-out included
+    orthogonal: list[tuple[str, list[str]]]  # (state's full_path, [region names]) — one per AND-state
+
+
+def structural_facts(defn: Definition) -> StructuralFacts:
+    invokes = sorted((node.full_path, str(node.invoke)) for node in defn.index.values() if node.invoke)
+    orthogonal = sorted(
+        (node.full_path, [child.name for child in node.children])
+        for node in defn.index.values()
+        if node.kind is NodeKind.ORTHOGONAL
+    )
+    return StructuralFacts(invokes=invokes, orthogonal=orthogonal)
+
+
+# --- a machine's own top-level units --------------------------------------------------------
+
+
+@dataclass
+class TopLevelUnit:
+    """One execution worth listing on its own — never an orthogonal region (see
+    `top_level_units`). `failed_descendants` rolls up its whole subtree, so a failure inside a
+    region or an invoked child isn't hidden behind a root whose own status still reads RUNNING."""
+
+    id: str
+    status: str
+    active_path: Optional[str]
+    outcome: Optional[str]
+    failed_descendants: int
+
+
+_MAX_UNITS = 50
+
+
+def top_level_units(definition_id: str, using: str = "default") -> tuple[list[TopLevelUnit], int]:
+    """The executions of `definition_id` worth listing as their own thing: its roots, and any
+    invoked submachine's own entry point (a child whose `definition_id` differs from its
+    parent's). An orthogonal region (same `definition_id` as its parent) never stands alone —
+    it only makes sense nested inside its parent's tree (`execution_tree`).
+
+    Oldest first; the first `_MAX_UNITS` and how many more there are."""
+    connection = connections[using]
+    status_col = json_field(connection.vendor, "status")
+    active_col = json_field(connection.vendor, "active_path")
+    outcome_col = json_field(connection.vendor, "outcome")
+    parent_col = json_field(connection.vendor, "parent_id")
+
+    with connection.cursor() as cur:
+        cur.execute(
+            f"SELECT id, {status_col}, {active_col}, {outcome_col}, {parent_col} "
+            "FROM harel_executions WHERE definition_id = %s ORDER BY id",
+            [definition_id],
+        )
+        rows = cur.fetchall()
+        parent_ids = {r[4] for r in rows if r[4] is not None}
+        parent_machine: dict[str, str] = {}
+        if parent_ids:
+            placeholders = ", ".join(["%s"] * len(parent_ids))
+            cur.execute(
+                f"SELECT id, definition_id FROM harel_executions WHERE id IN ({placeholders})",
+                list(parent_ids),
+            )
+            parent_machine = dict(cur.fetchall())
+
+    units = [
+        (exe_id, status, active_path, outcome)
+        for exe_id, status, active_path, outcome, parent_id in rows
+        if parent_id is None or parent_machine.get(parent_id) != definition_id
+    ]
+    total = len(units)
+    kept = units[:_MAX_UNITS]
+
+    # MySQL's LIKE escapes with a backslash by default (an explicit ESCAPE clause there would
+    # double up); see DjangoStore.ids_with_prefix, the same pattern
+    escape = "" if connection.vendor == "mysql" else " ESCAPE '\\'"
+
+    def failed_descendants(unit_id: str) -> int:
+        with connection.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM harel_executions WHERE id LIKE %s{escape} AND {status_col} = %s",
+                [like_prefix(f"{unit_id}:"), Status.FAILED.value],
+            )
+            return cur.fetchone()[0]
+
+    return [
+        TopLevelUnit(exe_id, status, active_path, outcome, failed_descendants(exe_id))
+        for exe_id, status, active_path, outcome in kept
+    ], max(0, total - len(kept))
+
+
+# --- one unit's whole tree -------------------------------------------------------------------
+
+
+@dataclass
+class TreeNode:
+    id: str
+    depth: int  # 0 = the unit itself
+    kind: str  # "unit" | "region" | "invoke"
+    status: str
+    active_path: Optional[str]
+    outcome: Optional[str]
+
+
+_MAX_TREE_NODES = 200
+
+
+def execution_tree(
+    execution_id: str, store: DjangoStore, max_nodes: int = _MAX_TREE_NODES
+) -> tuple[list[TreeNode], int]:
+    """`execution_id` and everything hanging off it — regions, invoked children, and theirs —
+    depth-first. The first `max_nodes` and how many more there are."""
+    root = store.load(execution_id)
+    if root is None:
+        return [], 0
+    nodes = [TreeNode(root.id, 0, "unit", root.status.value, root.active_path, root.outcome)]
+    overflow = 0
+
+    def walk(exe: Execution, depth: int) -> None:
+        nonlocal overflow
+        for child_id, child in exe.children.items():
+            loaded = store.load(child_id)
+            if loaded is None:
+                continue
+            if len(nodes) >= max_nodes:
+                overflow += 1
+                continue
+            nodes.append(
+                TreeNode(
+                    loaded.id,
+                    depth,
+                    "invoke" if child.submachine else "region",
+                    loaded.status.value,
+                    loaded.active_path,
+                    loaded.outcome,
+                )
+            )
+            walk(loaded, depth + 1)
+
+    walk(root, 1)
+    return nodes, overflow

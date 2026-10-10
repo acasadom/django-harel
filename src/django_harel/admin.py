@@ -16,7 +16,9 @@ from django.contrib.admin import helpers
 from django.contrib.admin.utils import quote
 from django.core.exceptions import PermissionDenied
 from django.db import connections
+from django.db.models import Exists, OuterRef
 from django.db.models.expressions import RawSQL
+from django.http import Http404
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html, format_html_join
@@ -99,20 +101,27 @@ class StatusFilter(_JsonFieldFilter):
         return [(s.value, s.value.lower()) for s in Status]
 
 
-class RootsFilter(admin.SimpleListFilter):
+class TopLevelFilter(admin.SimpleListFilter):
+    """ "Top-level only": an execution worth looking at on its own — no parent, or a parent
+    that runs a *different* machine (an invoked submachine's own entry point). Excludes
+    orthogonal regions, which only make sense nested inside their parent's tree (see the
+    Machines page, and `inspection.top_level_units`)."""
+
     title = "kind"
-    parameter_name = "roots"
+    parameter_name = "top_level"
 
     def lookups(self, request, model_admin):
-        return [("1", "roots only")]
+        return [("1", "top-level only")]
 
     def queryset(self, request, queryset):
         if self.value() != "1":
             return queryset
         vendor = connections[queryset.db].vendor
-        return queryset.annotate(_parent_id=RawSQL(json_field(vendor, "parent_id"), [])).filter(
-            _parent_id__isnull=True
+        qs = queryset.annotate(_parent_id=RawSQL(json_field(vendor, "parent_id"), []))
+        same_machine_parent = HarelExecution.objects.filter(
+            id=OuterRef("_parent_id"), definition_id=OuterRef("definition_id")
         )
+        return qs.filter(~Exists(same_machine_parent))
 
 
 # the change page: everything read-only
@@ -131,7 +140,7 @@ _DETAIL = tuple(name for _, options in _FIELDSETS for name in options["fields"])
 @admin.register(HarelExecution)
 class HarelExecutionAdmin(admin.ModelAdmin):
     list_display = ["id", "definition_id", "status", "outcome", "active_state", "updated", "version"]
-    list_filter = [StatusFilter, "definition_id", RootsFilter]
+    list_filter = [StatusFilter, "definition_id", TopLevelFilter]
     search_fields = ["=id", "^id", "definition_id"]
     ordering = ["id"]
     list_per_page = 50
@@ -158,28 +167,60 @@ class HarelExecutionAdmin(admin.ModelAdmin):
         """Who may run the control-plane actions: whoever may change an execution."""
         return request.user.has_perm("django_harel.change_harelexecution")
 
-    # --- the dashboard -------------------------------------------------------------------------
+    # --- the machines catalog -------------------------------------------------------------------
     def get_urls(self):
         urls = [
-            path("dashboard/", self.admin_site.admin_view(self.dashboard_view), name="django_harel_dashboard")
+            path("machines/", self.admin_site.admin_view(self.machines_view), name="django_harel_machines"),
+            path(
+                "machines/<str:definition_id>/",
+                self.admin_site.admin_view(self.machine_detail_view),
+                name="django_harel_machine_detail",
+            ),
         ]
         return urls + super().get_urls()
 
-    def dashboard_view(self, request):
-        """One row per machine (see `inspection.dashboard`): how many executions in each
-        status, its failed ones linked, how big its queue is and how long the oldest message
-        has waited, and timers overdue — the signal that no worker is running."""
+    def machines_view(self, request):
+        """One row per machine `conf.definitions()` knows (see `inspection.dashboard`): how
+        many executions in each status, its failed ones linked, how big its queue is and how
+        long the oldest message has waited, and timers overdue — the signal that no worker is
+        running. Each name links to the machine's own page."""
         if not self.has_view_permission(request):
             raise PermissionDenied
         using = conf.get_setting("DATABASE")
-        rows = [_dashboard_row(summary) for summary in inspection.dashboard(using)]
+        rows = [_machine_row(summary) for summary in inspection.dashboard(using)]
         context = {
             **self.admin_site.each_context(request),
-            "title": "Dashboard",
+            "title": "Machines",
             "opts": self.model._meta,
             "rows": rows,
         }
-        return TemplateResponse(request, "admin/django_harel/dashboard.html", context)
+        return TemplateResponse(request, "admin/django_harel/machines.html", context)
+
+    def machine_detail_view(self, request, definition_id: str):
+        """One machine: its diagram, what it invokes and which of its states are orthogonal
+        (`inspection.structural_facts`), the same operational row `machines_view` shows, and
+        its top-level units (`inspection.top_level_units`) — never a bare orthogonal region,
+        which only makes sense inside its unit's own tree (the execution detail page)."""
+        if not self.has_view_permission(request):
+            raise PermissionDenied
+        defn = conf.definitions().get(definition_id)
+        if defn is None:
+            raise Http404(f"no machine {definition_id!r} in DJANGO_HAREL['MACHINES']")
+        using = conf.get_setting("DATABASE")
+        units, more = inspection.top_level_units(definition_id, using)
+        context = {
+            **self.admin_site.each_context(request),
+            "title": definition_id,
+            "opts": self.model._meta,
+            "definition_id": definition_id,
+            "diagram": diagram_source(defn, []),
+            "facts": _structural_facts_row(defn),
+            "row": _machine_row(inspection.machine_summary(definition_id, using)),
+            "units": [_unit_row(u) for u in units],
+            "units_more": more,
+            "media": self.media,  # Mermaid/admin.js/admin.css: the change form gets this for free
+        }
+        return TemplateResponse(request, "admin/django_harel/machine_detail.html", context)
 
     # --- columns -----------------------------------------------------------------------------
     @admin.display(description="status")
@@ -235,31 +276,33 @@ class HarelExecutionAdmin(admin.ModelAdmin):
 
     @admin.display(description="tree")
     def tree(self, obj):
+        """This execution's whole tree (`inspection.execution_tree`): itself, its orthogonal
+        regions and invoked children, and theirs — indented by depth. A region never gets its
+        own row anywhere else; this is the only place it's shown."""
         exe = Execution.model_validate_json(obj.data)
         store = self._store(obj)
         parts: list[str] = []
         if exe.parent_id:
             parts.append(format_html("<p>Parent: {}</p>", _execution_link(exe.parent_id)))
-        rows = []
-        for child_id, child in list(exe.children.items())[:_MAX_ROWS]:
-            loaded = store.load(child_id)
-            rows.append(
+        nodes, overflow = inspection.execution_tree(obj.id, store)
+        if len(nodes) > 1 or overflow:
+            rows = [
                 (
-                    _execution_link(child_id),
-                    "invoke" if child.submachine else "region",
-                    loaded.status.value if loaded else "—",
-                    loaded.active_path if loaded and loaded.active_path else "—",
-                    loaded.outcome if loaded and loaded.outcome else "—",
+                    format_html(
+                        '<span class="harel-tree-id" style="padding-left: {}em">{}</span>',
+                        n.depth * 1.5,
+                        _execution_link(n.id),
+                    ),
+                    n.kind if n.depth else "—",
+                    n.status,
+                    n.active_path or "—",
+                    n.outcome or "—",
                 )
-            )
-        if rows:
-            parts.append(
-                _table(
-                    ("Child", "Kind", "Status", "State", "Outcome"), rows, more=len(exe.children) - len(rows)
-                )
-            )
+                for n in nodes
+            ]
+            parts.append(_table(("Execution", "Kind", "Status", "State", "Outcome"), rows, more=overflow))
         if not parts:
-            return format_html('<span class="harel-muted">{}</span>', "— (a root, with no children)")
+            return format_html('<span class="harel-muted">{}</span>', "— (no children)")
         return format_html_join("", "{}", ((p,) for p in parts))
 
     @admin.display(description="waiting")
@@ -445,9 +488,10 @@ def _humanize_age(seconds: float) -> str:
     return f"{days}d {hours}h"
 
 
-def _dashboard_row(summary) -> dict:
-    """A `MachineSummary` as the dashboard template renders it: counts linked to the filtered
-    changelist, failed executions linked individually, the queue's age humanized."""
+def _machine_row(summary) -> dict:
+    """A `MachineSummary` as the Machines templates render it: counts linked to the filtered
+    changelist, failed executions linked individually, the queue's age humanized, a link to
+    the machine's own page."""
     counts = [
         {
             "status": status,
@@ -459,6 +503,7 @@ def _dashboard_row(summary) -> dict:
     ]
     return {
         "definition_id": summary.definition_id,
+        "detail_url": reverse("admin:django_harel_machine_detail", args=[summary.definition_id]),
         "total": sum(summary.counts.values()),
         "counts": counts,
         "failed_links": [_execution_link(i) for i in summary.failed_ids],
@@ -467,4 +512,35 @@ def _dashboard_row(summary) -> dict:
         "queued": summary.queued,
         "oldest_queued_age": _humanize_age(summary.oldest_queued_age) if summary.oldest_queued_age else None,
         "overdue_timers": summary.overdue_timers,
+    }
+
+
+def _structural_facts_row(defn) -> dict:
+    """A `StructuralFacts` as the machine detail template renders it: each invoke's target
+    linked to its own machine page when `conf.definitions()` knows it (a submachine does)."""
+    facts = inspection.structural_facts(defn)
+    known = conf.definitions()
+    return {
+        "invokes": [
+            {
+                "state": state,
+                "target": target,
+                "url": reverse("admin:django_harel_machine_detail", args=[target])
+                if target in known
+                else None,
+            }
+            for state, target in facts.invokes
+        ],
+        "orthogonal": [{"state": state, "regions": regions} for state, regions in facts.orthogonal],
+    }
+
+
+def _unit_row(unit) -> dict:
+    """A `TopLevelUnit` as the machine detail template renders it."""
+    return {
+        "link": _execution_link(unit.id),
+        "status": unit.status,
+        "active_path": unit.active_path or "—",
+        "outcome": unit.outcome or "—",
+        "failed_descendants": unit.failed_descendants,
     }

@@ -31,7 +31,7 @@ def test_the_list_shows_and_filters_by_status(admin_client, jobs):
     done_only = admin_client.get(reverse(CHANGELIST), {"status": "DONE"})
     assert b"job-done" in done_only.content and b"job-running" not in done_only.content
 
-    roots = admin_client.get(reverse(CHANGELIST), {"roots": "1"})
+    roots = admin_client.get(reverse(CHANGELIST), {"top_level": "1"})
     assert b"job-running" in roots.content
 
 
@@ -193,10 +193,10 @@ def test_a_state_the_machine_no_longer_has_is_drawn_without_the_highlight():
     assert source.startswith("stateDiagram-v2") and "classDef active" not in source
 
 
-# --- the dashboard --------------------------------------------------------------------------------
+# --- the machines catalog --------------------------------------------------------------------------
 
 
-DASHBOARD = "admin:django_harel_dashboard"
+MACHINES = "admin:django_harel_machines"
 
 
 class Clock:
@@ -207,17 +207,17 @@ class Clock:
         return self.now
 
 
-def test_the_dashboard_lists_every_configured_machine(admin_client, jobs):
-    page = admin_client.get(reverse(DASHBOARD))
+def test_machines_lists_every_configured_machine(admin_client, jobs):
+    page = admin_client.get(reverse(MACHINES))
     assert page.status_code == 200
     body = page.content.decode()
     for definition_id in ("job", "order", "fulfilment"):
-        assert f"<h2>{definition_id}" in body
+        assert f">{definition_id}</a>" in body, f"{definition_id} is linked to its own page"
     assert "PENDING: 1" not in body  # jobs fixture creates no PENDING job
 
 
-def test_the_dashboard_shows_status_counts_linked_to_the_filtered_list(admin_client, jobs):
-    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+def test_machines_shows_status_counts_linked_to_the_filtered_list(admin_client, jobs):
+    body = admin_client.get(reverse(MACHINES)).content.decode()
     assert "RUNNING: 1" in body
     assert "DONE: 1" in body
     assert "definition_id=job&amp;status=RUNNING" in body or "definition_id=job&status=RUNNING" in body
@@ -233,7 +233,7 @@ def test_a_failed_execution_is_linked_and_overflow_is_counted(admin_client):
         for _ in range(12)
     ]
 
-    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    body = admin_client.get(reverse(MACHINES)).content.decode()
     assert "FAILED: 12" in body
     shown, hidden = sorted(failed_ids)[:10], sorted(failed_ids)[10:]
     for execution_id in shown:
@@ -244,7 +244,7 @@ def test_a_failed_execution_is_linked_and_overflow_is_counted(admin_client):
 
 
 def test_the_queue_size_and_oldest_age_are_shown(admin_client, monkeypatch):
-    """The dashboard reads "now" from `time.time()` (it isn't tied to any one runner's clock),
+    """The machines page reads "now" from `time.time()` (it isn't tied to any one runner's clock),
     so the fake clock here stands in for it too — `inspection.time.time` is patched to it."""
     from harel.engine.distributed import DistributedRunner
 
@@ -258,11 +258,11 @@ def test_the_queue_size_and_oldest_age_are_shown(admin_client, monkeypatch):
     runner = DistributedRunner(runner_store, transport, conf.definitions(), clock=clock, execution="inline")
     runner.create("job", execution_id="waiting", start_on_create=True)
 
-    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    body = admin_client.get(reverse(MACHINES)).content.decode()
     assert "1 queued" in body
 
     clock.now += 125  # 2m 5s later: nothing drained it (no worker ran)
-    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    body = admin_client.get(reverse(MACHINES)).content.decode()
     assert "1 queued" in body and "oldest waiting" in body and "2m 5s" in body
 
 
@@ -277,28 +277,127 @@ def test_overdue_timers_are_flagged(admin_client):
     exe = runner.create("order", context={"order_id": order.pk})
     runner.worker(worker_id="w").step()  # runs Start: AwaitingPayment arms its 60s timeout
 
-    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    body = admin_client.get(reverse(MACHINES)).content.decode()
     assert "none overdue" in body
 
     with connection.cursor() as cur:
         cur.execute("UPDATE harel_timers SET fire_at = fire_at - 3660 WHERE execution_id = %s", [exe.id])
-    body = admin_client.get(reverse(DASHBOARD)).content.decode()
+    body = admin_client.get(reverse(MACHINES)).content.decode()
     assert "1 overdue — is a worker running?" in body
 
 
-def test_a_viewer_can_see_the_dashboard_without_operate_permission(client, jobs):
+def test_a_viewer_can_see_machines_without_operate_permission(client, jobs):
     viewer = User.objects.create_user("viewer2", password="x", is_staff=True)
     viewer.user_permissions.add(Permission.objects.get(codename="view_harelexecution"))
     client.force_login(viewer)
-    assert client.get(reverse(DASHBOARD)).status_code == 200
+    assert client.get(reverse(MACHINES)).status_code == 200
 
 
 def test_someone_without_view_permission_is_refused(client, jobs):
     plain = User.objects.create_user("plain", password="x", is_staff=True)
     client.force_login(plain)
-    assert client.get(reverse(DASHBOARD)).status_code == 403
+    assert client.get(reverse(MACHINES)).status_code == 403
 
 
-def test_the_changelist_links_to_the_dashboard(admin_client):
+def test_the_changelist_links_to_machines(admin_client):
     body = admin_client.get(reverse(CHANGELIST)).content.decode()
-    assert reverse(DASHBOARD) in body
+    assert reverse(MACHINES) in body
+
+
+# --- a machine's own page --------------------------------------------------------------------------
+
+
+def _machine_page(client, definition_id):
+    page = client.get(reverse("admin:django_harel_machine_detail", args=[definition_id]))
+    assert page.status_code == 200
+    return page.content.decode()
+
+
+def test_a_machines_page_shows_its_diagram_and_shape(admin_client):
+    body = _machine_page(admin_client, "fulfilment")
+    assert '<pre class="harel-diagram">stateDiagram-v2' in body
+    assert "mermaid@11.15.0/dist/mermaid.min.js" in body and "django_harel/admin.js" in body, (
+        "a custom TemplateResponse doesn't get the change form's Media for free"
+    )
+    assert "<code>Fulfilling</code> forks into: <code>Shipping</code>, <code>Billing</code>" in body
+    assert "<code>Fulfilling.Shipping.Packing</code> invokes" in body
+    assert reverse("admin:django_harel_machine_detail", args=["parcels.parcel"]) in body
+
+
+def test_a_leaf_machine_has_no_shape_section(admin_client):
+    body = _machine_page(admin_client, "parcels.parcel")
+    assert "<h2>Shape</h2>" not in body
+
+
+def test_an_unknown_machine_is_a_404(admin_client):
+    page = admin_client.get(reverse("admin:django_harel_machine_detail", args=["no-such-machine"]))
+    assert page.status_code == 404
+
+
+def test_someone_without_view_permission_is_refused_a_machine_page(client):
+    plain = User.objects.create_user("plain2", password="x", is_staff=True)
+    client.force_login(plain)
+    page = client.get(reverse("admin:django_harel_machine_detail", args=["job"]))
+    assert page.status_code == 403
+
+
+def test_top_level_units_never_include_a_bare_region(admin_client, widgets):
+    from tests.app.models import Order
+
+    order = Order.objects.create(item="widget", qty=1)
+    exe = conf.durable_runner().create("fulfilment", context={"order_id": order.pk, "items": ["a"]})
+    regions = [cid for cid, child in exe.children.items() if not child.submachine]
+    assert len(regions) == 2
+
+    fulfilment_page = _machine_page(admin_client, "fulfilment")
+    assert f"<code>{exe.id}</code>" in fulfilment_page
+    for region_id in regions:
+        assert region_id not in fulfilment_page, "a region never gets its own row"
+
+    parcel_page = _machine_page(admin_client, "parcels.parcel")
+    # the parcel is invoked by the Shipping region, not by the root, but is still its own unit
+    shipping = next(r for r in regions if conf.durable_runner().store.load(r).root_path.endswith("Shipping"))
+    parcel_ids = [cid for cid, c in conf.durable_runner().store.load(shipping).children.items()]
+    assert parcel_ids, "the fixture has at least one item"
+    for parcel_id in parcel_ids:
+        assert f"<code>{parcel_id}</code>" in parcel_page
+
+
+def test_a_failure_nested_two_levels_down_rolls_up_to_the_root(admin_client, widgets):
+    from tests.app.models import Order
+
+    runner = conf.durable_runner()
+    order = Order.objects.create(item="widget", qty=1)
+    exe = runner.create("fulfilment", context={"order_id": order.pk, "items": ["a"], "card_ok": False})
+    runner.process(exe.id, Event(kind="Paid"))  # Billing.Charging raises, unhandled: dead-letters the region
+
+    reloaded = runner.store.load(exe.id)
+    assert reloaded.status is Status.RUNNING, "the root itself is untouched by its region's failure"
+
+    body = _machine_page(admin_client, "fulfilment")
+    row_start = body.index(f"<code>{exe.id}</code>")
+    row = body[row_start : row_start + 400]
+    assert "RUNNING" in row
+    assert '<span class="harel-alert">1</span>' in row, "one failed execution inside this unit's tree"
+
+
+def test_the_failed_region_itself_is_findable_from_the_tree(admin_client, widgets):
+    from tests.app.models import Order
+
+    runner = conf.durable_runner()
+    order = Order.objects.create(item="widget", qty=1)
+    exe = runner.create("fulfilment", context={"order_id": order.pk, "items": ["a"], "card_ok": False})
+    runner.process(exe.id, Event(kind="Paid"))
+
+    # the root's own page points at its tree, which is where the failed region actually lives
+    root_page = _change_page(admin_client, exe.id)
+    billing = next(
+        cid
+        for cid, c in runner.store.load(exe.id).children.items()
+        if not c.submachine and runner.store.load(cid).root_path.endswith("Billing")
+    )
+    assert f"<code>{billing}</code>" in root_page
+
+    region_page = _change_page(admin_client, billing)
+    assert ">FAILED<" in region_page
+    assert "CardRefused" in region_page

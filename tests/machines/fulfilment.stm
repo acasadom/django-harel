@@ -8,12 +8,13 @@ machine fulfilment {
   context {
     order_id: int
     items: any
+    card_ok: bool = true
   }
 
   initial Fulfilling
 
   orthogonal Fulfilling {
-    with { order_id: order_id  items: items }
+    with { order_id: order_id  items: items  card_ok: card_ok }
 
     state Shipping {
       initial Packing
@@ -28,7 +29,7 @@ machine fulfilment {
 
     state Billing {
       initial Charging
-      state Charging {}
+      state Charging { on enter tests.app.actions.charge }
       final Charged success
       from Charging to Charged on Paid
     }

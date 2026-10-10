@@ -9,5 +9,8 @@
 .harel-muted { color: var(--body-quiet-color); }
 .harel-alert { color: var(--error-fg); font-weight: bold; }
 .harel-active code { font-weight: bold; }
-.harel-dashboard { width: 100%; margin-bottom: 2em; }
-.harel-dashboard th, .harel-dashboard td { white-space: normal; }
+.harel-wide-table { width: 100%; margin-bottom: 2em; }
+.harel-wide-table th, .harel-wide-table td { white-space: normal; }
+/* a tree row's id can be deep and long (every ancestor's id prefixes it): let it wrap instead
+   of overflowing, nowrap, onto the next column */
+.harel-tree-id code { white-space: normal; overflow-wrap: anywhere; }

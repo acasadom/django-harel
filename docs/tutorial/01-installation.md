@@ -61,7 +61,7 @@ On SQLite and PostgreSQL these are exactly the tables harel's own backends creat
 tools can read them too.
 
 One table is django-harel's own, outside harel's schema: `django_harel_queue_log` records when
-each queued message was published, for the admin dashboard's "oldest waiting" — harel's own
+each queued message was published, for the admin's Machines page's "oldest waiting" — harel's own
 schema has no timestamp on a message.
 
 ```{note}

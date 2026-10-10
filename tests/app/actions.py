@@ -52,3 +52,14 @@ def tick(stm, event, *, step: str, **_):
     from tests.app.models import Tick
 
     Tick.objects.create(execution_id=stm.execution_ctx["id"], step=step)
+
+
+class CardRefused(Exception):
+    pass
+
+
+def charge(stm, event, **_):
+    """fulfilment.stm's Billing.Charging: unhandled (no `on error` here) — dead-letters the
+    region, for `test_admin.py`'s failed-descendant rollup."""
+    if not stm.execution_ctx["card_ok"]:
+        raise CardRefused(f"order {stm.execution_ctx['order_id']}'s card was refused")
