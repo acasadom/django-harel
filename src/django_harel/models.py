@@ -27,3 +27,20 @@ class HarelExecution(models.Model):
     @property
     def snapshot(self) -> dict:
         return json.loads(self.data)
+
+
+class HarelMachine(HarelExecution):
+    """`HarelExecution` again, under its own name, purely so it gets its own entry in the admin
+    sidebar next to "Executions" — "Machines" (the `.stm` definitions `conf.definitions()`
+    knows) and "Executions" (instances of them) are different things, and having both visible
+    at once, side by side, says so without a word of explanation.
+
+    A proxy: same table, no migration, no permissions of its own (`default_permissions = ()`)
+    — `HarelMachineAdmin` checks the same `django_harel.*_harelexecution` permissions instead."""
+
+    class Meta:
+        proxy = True
+        app_label = "django_harel"
+        verbose_name = "machine"
+        verbose_name_plural = "machines"
+        default_permissions = ()

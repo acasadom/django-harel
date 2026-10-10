@@ -196,7 +196,7 @@ def test_a_state_the_machine_no_longer_has_is_drawn_without_the_highlight():
 # --- the machines catalog --------------------------------------------------------------------------
 
 
-MACHINES = "admin:django_harel_machines"
+MACHINES = "admin:django_harel_harelmachine_changelist"
 
 
 class Clock:
@@ -299,16 +299,20 @@ def test_someone_without_view_permission_is_refused(client, jobs):
     assert client.get(reverse(MACHINES)).status_code == 403
 
 
-def test_the_changelist_links_to_machines(admin_client):
-    body = admin_client.get(reverse(CHANGELIST)).content.decode()
-    assert reverse(MACHINES) in body
+def test_machines_and_executions_are_both_in_the_sidebar(admin_client):
+    """Not a link buried on one page: "Machines" (the `.stm` definitions) sits next to
+    "Executions" (instances of them) everywhere in the admin, as its own navigable entry —
+    reachable without knowing its URL."""
+    body = admin_client.get(reverse("admin:index")).content.decode()
+    assert reverse(MACHINES) in body and "Machines" in body
+    assert reverse(CHANGELIST) in body and "Executions" in body
 
 
 # --- a machine's own page --------------------------------------------------------------------------
 
 
 def _machine_page(client, definition_id):
-    page = client.get(reverse("admin:django_harel_machine_detail", args=[definition_id]))
+    page = client.get(reverse("admin:django_harel_harelmachine_detail", args=[definition_id]))
     assert page.status_code == 200
     return page.content.decode()
 
@@ -321,7 +325,7 @@ def test_a_machines_page_shows_its_diagram_and_shape(admin_client):
     )
     assert "<code>Fulfilling</code> forks into: <code>Shipping</code>, <code>Billing</code>" in body
     assert "<code>Fulfilling.Shipping.Packing</code> invokes" in body
-    assert reverse("admin:django_harel_machine_detail", args=["parcels.parcel"]) in body
+    assert reverse("admin:django_harel_harelmachine_detail", args=["parcels.parcel"]) in body
 
 
 def test_a_leaf_machine_has_no_shape_section(admin_client):
@@ -330,14 +334,14 @@ def test_a_leaf_machine_has_no_shape_section(admin_client):
 
 
 def test_an_unknown_machine_is_a_404(admin_client):
-    page = admin_client.get(reverse("admin:django_harel_machine_detail", args=["no-such-machine"]))
+    page = admin_client.get(reverse("admin:django_harel_harelmachine_detail", args=["no-such-machine"]))
     assert page.status_code == 404
 
 
 def test_someone_without_view_permission_is_refused_a_machine_page(client):
     plain = User.objects.create_user("plain2", password="x", is_staff=True)
     client.force_login(plain)
-    page = client.get(reverse("admin:django_harel_machine_detail", args=["job"]))
+    page = client.get(reverse("admin:django_harel_harelmachine_detail", args=["job"]))
     assert page.status_code == 403
 
 

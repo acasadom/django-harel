@@ -27,7 +27,7 @@ from harel.engine.control import PurgeRefused
 from harel.engine.execution import Execution, Status
 
 from django_harel import conf, inspection
-from django_harel.models import HarelExecution
+from django_harel.models import HarelExecution, HarelMachine
 from django_harel.store import DjangoStore, json_field
 
 
@@ -137,8 +137,18 @@ _FIELDSETS: Any = (
 _DETAIL = tuple(name for _, options in _FIELDSETS for name in options["fields"])
 
 
+class _DrawsDiagrams:
+    """Mixin for an admin that renders a Mermaid diagram (`HarelExecutionAdmin`'s own, and
+    `HarelMachineAdmin`'s on a page outside the built-in change form, which doesn't get
+    `Media` for free — see `HarelMachineAdmin.machine_detail_view`)."""
+
+    class Media:
+        js = (conf.get_setting("MERMAID_JS"), "django_harel/admin.js")
+        css = {"all": ("django_harel/admin.css",)}
+
+
 @admin.register(HarelExecution)
-class HarelExecutionAdmin(admin.ModelAdmin):
+class HarelExecutionAdmin(_DrawsDiagrams, admin.ModelAdmin):
     list_display = ["id", "definition_id", "status", "outcome", "active_state", "updated", "version"]
     list_filter = [StatusFilter, "definition_id", TopLevelFilter]
     search_fields = ["=id", "^id", "definition_id"]
@@ -146,10 +156,6 @@ class HarelExecutionAdmin(admin.ModelAdmin):
     list_per_page = 50
     fieldsets = _FIELDSETS
     readonly_fields = _DETAIL
-
-    class Media:
-        js = (conf.get_setting("MERMAID_JS"), "django_harel/admin.js")
-        css = {"all": ("django_harel/admin.css",)}
 
     actions = ["suspend", "resume", "cancel", "terminate", "redrive", "purge"]
 
@@ -166,61 +172,6 @@ class HarelExecutionAdmin(admin.ModelAdmin):
     def has_operate_permission(self, request):
         """Who may run the control-plane actions: whoever may change an execution."""
         return request.user.has_perm("django_harel.change_harelexecution")
-
-    # --- the machines catalog -------------------------------------------------------------------
-    def get_urls(self):
-        urls = [
-            path("machines/", self.admin_site.admin_view(self.machines_view), name="django_harel_machines"),
-            path(
-                "machines/<str:definition_id>/",
-                self.admin_site.admin_view(self.machine_detail_view),
-                name="django_harel_machine_detail",
-            ),
-        ]
-        return urls + super().get_urls()
-
-    def machines_view(self, request):
-        """One row per machine `conf.definitions()` knows (see `inspection.dashboard`): how
-        many executions in each status, its failed ones linked, how big its queue is and how
-        long the oldest message has waited, and timers overdue — the signal that no worker is
-        running. Each name links to the machine's own page."""
-        if not self.has_view_permission(request):
-            raise PermissionDenied
-        using = conf.get_setting("DATABASE")
-        rows = [_machine_row(summary) for summary in inspection.dashboard(using)]
-        context = {
-            **self.admin_site.each_context(request),
-            "title": "Machines",
-            "opts": self.model._meta,
-            "rows": rows,
-        }
-        return TemplateResponse(request, "admin/django_harel/machines.html", context)
-
-    def machine_detail_view(self, request, definition_id: str):
-        """One machine: its diagram, what it invokes and which of its states are orthogonal
-        (`inspection.structural_facts`), the same operational row `machines_view` shows, and
-        its top-level units (`inspection.top_level_units`) — never a bare orthogonal region,
-        which only makes sense inside its unit's own tree (the execution detail page)."""
-        if not self.has_view_permission(request):
-            raise PermissionDenied
-        defn = conf.definitions().get(definition_id)
-        if defn is None:
-            raise Http404(f"no machine {definition_id!r} in DJANGO_HAREL['MACHINES']")
-        using = conf.get_setting("DATABASE")
-        units, more = inspection.top_level_units(definition_id, using)
-        context = {
-            **self.admin_site.each_context(request),
-            "title": definition_id,
-            "opts": self.model._meta,
-            "definition_id": definition_id,
-            "diagram": diagram_source(defn, []),
-            "facts": _structural_facts_row(defn),
-            "row": _machine_row(inspection.machine_summary(definition_id, using)),
-            "units": [_unit_row(u) for u in units],
-            "units_more": more,
-            "media": self.media,  # Mermaid/admin.js/admin.css: the change form gets this for free
-        }
-        return TemplateResponse(request, "admin/django_harel/machine_detail.html", context)
 
     # --- columns -----------------------------------------------------------------------------
     @admin.display(description="status")
@@ -454,6 +405,85 @@ class HarelExecutionAdmin(admin.ModelAdmin):
         self._each(request, queryset, "Purged", conf.distributed_runner().purge)
 
 
+@admin.register(HarelMachine)
+class HarelMachineAdmin(_DrawsDiagrams, admin.ModelAdmin):
+    """The machines catalog: **Harel Statecharts › Machines**, next to **Executions** in the
+    sidebar — a `.stm` definition is a different thing from a running instance of one, and
+    having both as their own entry, side by side, says so without a word of explanation.
+
+    A proxy of `HarelExecution` purely to get that sidebar entry (see `HarelMachine`); nothing
+    here is a real "object" — `changelist_view` is the catalog, and the one custom URL is one
+    machine's own page. Permissions mirror `HarelExecutionAdmin`'s, not a separate set."""
+
+    def has_module_permission(self, request):
+        return request.user.has_perm("django_harel.view_harelexecution")
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.has_perm("django_harel.view_harelexecution")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def get_urls(self):
+        urls = [
+            path(
+                "<str:definition_id>/",
+                self.admin_site.admin_view(self.machine_detail_view),
+                name="django_harel_harelmachine_detail",
+            )
+        ]
+        return urls + super().get_urls()
+
+    def changelist_view(self, request, extra_context=None):
+        """One row per machine `conf.definitions()` knows (see `inspection.dashboard`): how
+        many executions in each status, its failed ones linked, how big its queue is and how
+        long the oldest message has waited, and timers overdue — the signal that no worker is
+        running. Each name links to the machine's own page."""
+        if not self.has_view_permission(request):
+            raise PermissionDenied
+        using = conf.get_setting("DATABASE")
+        rows = [_machine_row(summary) for summary in inspection.dashboard(using)]
+        context = {
+            **self.admin_site.each_context(request),
+            "title": "Machines",
+            "opts": self.model._meta,
+            "rows": rows,
+        }
+        return TemplateResponse(request, "admin/django_harel/machines.html", context)
+
+    def machine_detail_view(self, request, definition_id: str):
+        """One machine: its diagram, what it invokes and which of its states are orthogonal
+        (`inspection.structural_facts`), the same operational row `changelist_view` shows, and
+        its top-level units (`inspection.top_level_units`) — never a bare orthogonal region,
+        which only makes sense inside its unit's own tree (the execution detail page)."""
+        if not self.has_view_permission(request):
+            raise PermissionDenied
+        defn = conf.definitions().get(definition_id)
+        if defn is None:
+            raise Http404(f"no machine {definition_id!r} in DJANGO_HAREL['MACHINES']")
+        using = conf.get_setting("DATABASE")
+        units, more = inspection.top_level_units(definition_id, using)
+        context = {
+            **self.admin_site.each_context(request),
+            "title": definition_id,
+            "opts": self.model._meta,
+            "definition_id": definition_id,
+            "diagram": diagram_source(defn, []),
+            "facts": _structural_facts_row(defn),
+            "row": _machine_row(inspection.machine_summary(definition_id, using)),
+            "units": [_unit_row(u) for u in units],
+            "units_more": more,
+            "media": self.media,  # Mermaid/admin.js/admin.css: the change form gets this for free
+        }
+        return TemplateResponse(request, "admin/django_harel/machine_detail.html", context)
+
+
 def _redrive_targets(defn, executions) -> list[str]:
     """The states every one of `executions` can be redriven to: leaves of its own branch,
     outside any orthogonal state — harel's rule — and not a terminal, which would end it."""
@@ -503,7 +533,7 @@ def _machine_row(summary) -> dict:
     ]
     return {
         "definition_id": summary.definition_id,
-        "detail_url": reverse("admin:django_harel_machine_detail", args=[summary.definition_id]),
+        "detail_url": reverse("admin:django_harel_harelmachine_detail", args=[summary.definition_id]),
         "total": sum(summary.counts.values()),
         "counts": counts,
         "failed_links": [_execution_link(i) for i in summary.failed_ids],
@@ -525,7 +555,7 @@ def _structural_facts_row(defn) -> dict:
             {
                 "state": state,
                 "target": target,
-                "url": reverse("admin:django_harel_machine_detail", args=[target])
+                "url": reverse("admin:django_harel_harelmachine_detail", args=[target])
                 if target in known
                 else None,
             }

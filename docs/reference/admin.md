@@ -1,14 +1,16 @@
 # Admin
 
-With `django.contrib.admin` installed, **Harel Statecharts › Executions** is where you look at
-what's running. It's two kinds of page:
+With `django.contrib.admin` installed, **Harel Statecharts** sits in the sidebar with two
+entries, side by side: **Machines** and **Executions** — a `.stm` definition is a different
+thing from a running instance of one, and seeing both, always, as their own entry, says so
+without a word of explanation.
 
 - **Machines** — one page per machine, for understanding its shape and whether it's healthy.
-- **An execution's own page** — everything about one execution, its whole tree included.
+- **Executions** — everything about one execution, its whole tree included.
 
 ## Machines
 
-**Executions › Machines** lists every machine `conf.definitions()` knows: every entry in
+**Machines** lists every machine `conf.definitions()` knows: every entry in
 `DJANGO_HAREL["MACHINES"]`, and the submachines they `invoke` (a fan-out's parcel, say — it runs
 as its own executions, under its own id, so it gets its own row here too). Each name links to
 the machine's own page.
