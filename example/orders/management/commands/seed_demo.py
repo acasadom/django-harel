@@ -39,3 +39,13 @@ class Command(BaseCommand):
             f"created articles {draft.pk}, {in_review.pk}, {published.pk} and orders "
             f"for Dana, Eve and Frank (Frank's card is refused)"
         )
+        self.stdout.write(
+            self.style.WARNING(
+                "\nheads up: the worker log will shortly show a traceback for order "
+                f"{refused.pk} (Frank) — CardRefused, unhandled error; failing execution "
+                "...Fulfilling.Billing:0. That's intentional, not a bug: his card is refused "
+                "on purpose, to dead-letter that region for the Redrive demo (see "
+                "example/README.md). The worker itself keeps running; every other order "
+                "processes normally.\n"
+            )
+        )
