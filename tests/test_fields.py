@@ -1,4 +1,4 @@
-"""Workflow: a model's machine as an attribute of the model."""
+"""ExecutionField: a model's machine as an attribute of the model."""
 
 import threading
 
@@ -32,7 +32,7 @@ def test_autostart_queues_the_start_with_the_row():
     assert ticket.workflow.state == "Running"
 
 
-def test_a_rolled_back_row_has_no_workflow():
+def test_a_rolled_back_row_has_no_execution():
     with pytest.raises(RuntimeError):
         with transaction.atomic():
             ticket = Ticket.objects.create(title="never saved")
@@ -52,7 +52,7 @@ def test_send_queues_and_the_worker_runs_it():
     assert ticket.workflow.status is Status.DONE and ticket.workflow.outcome == "failure"
 
 
-def test_a_request_workflow_runs_in_the_caller():
+def test_a_request_run_field_starts_in_the_caller():
     ticket = Ticket.objects.create(title="review me")
     assert not ticket.review.exists, "only `workflow` starts with the row"
 
@@ -80,17 +80,17 @@ def test_instance_for_finds_the_row_back():
     ticket.review.start()
     assert instance_for(ticket.review.execution) == ticket
 
-    other = conf.durable_runner().create("job", execution_id="not-a-workflow")
+    other = conf.durable_runner().create("job", execution_id="not-a-field")
     assert instance_for(other) is None
 
 
-def test_the_class_attribute_is_the_workflow():
+def test_the_class_attribute_is_the_field():
     assert Ticket.workflow.definition_id == "job"
     with pytest.raises(ValueError, match="no primary key"):
         Ticket(title="unsaved").workflow.id
 
 
-def test_fixtures_do_not_start_workflows():
+def test_fixtures_do_not_autostart():
     from django.db.models.signals import post_save
 
     ticket = Ticket(title="loaded")

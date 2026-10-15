@@ -1,6 +1,6 @@
 from django.db import models
 
-from django_harel import Workflow
+from django_harel import ExecutionField
 
 
 class Order(models.Model):
@@ -11,7 +11,7 @@ class Order(models.Model):
     reminded = models.BooleanField(default=False)
 
     # shipped and billed side by side, by the workers; started with the row
-    fulfilment = Workflow(
+    fulfilment = ExecutionField(
         "fulfilment", autostart=True, context=lambda order: {"order_id": order.pk, "items": order.items}
     )
 

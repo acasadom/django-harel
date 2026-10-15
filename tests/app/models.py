@@ -1,6 +1,6 @@
 from django.db import models
 
-from django_harel.workflow import Workflow
+from django_harel.fields import ExecutionField
 
 
 class Stock(models.Model):
@@ -30,10 +30,10 @@ class Tick(models.Model):
 
 
 class Ticket(models.Model):
-    """Two workflows on one model: one the workers run, started with the row; one the request
-    runs, started by hand."""
+    """Two execution fields on one model: one the workers run, started with the row; one the
+    request runs, started by hand."""
 
     title = models.CharField(max_length=64)
 
-    workflow = Workflow("job", autostart=True)
-    review = Workflow("job", run="request", context=lambda ticket: {"title": ticket.title})
+    workflow = ExecutionField("job", autostart=True)
+    review = ExecutionField("job", run="request", context=lambda ticket: {"title": ticket.title})

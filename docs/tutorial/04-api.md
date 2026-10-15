@@ -107,7 +107,7 @@ order.workflow.send("PaymentSucceeded", event_id=stripe_event["id"], amount=amou
 
 ## Without a model
 
-`Workflow` is a convenience over two runners you can use directly — for an execution that
+`ExecutionField` is a convenience over two runners you can use directly — for an execution that
 doesn't belong to one row:
 
 ```python

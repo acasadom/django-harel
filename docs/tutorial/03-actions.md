@@ -11,7 +11,7 @@ like any other Django code.
 # articles/models.py
 from django.db import models
 
-from django_harel import Workflow
+from django_harel import ExecutionField
 
 class Article(models.Model):
     title         = models.CharField(max_length=255)
@@ -21,7 +21,7 @@ class Article(models.Model):
     reviewer_note = models.TextField(blank=True, default="")
     published_at  = models.DateTimeField(null=True, blank=True)
 
-    workflow = Workflow("publishing", autostart=True)
+    workflow = ExecutionField("publishing", autostart=True)
 ```
 
 `workflow` gives each article its own execution of the `publishing` machine, started when the

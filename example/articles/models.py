@@ -1,6 +1,6 @@
 from django.db import models
 
-from django_harel import Workflow
+from django_harel import ExecutionField
 
 
 class Article(models.Model):
@@ -12,7 +12,7 @@ class Article(models.Model):
     published_at = models.DateTimeField(null=True, blank=True)
 
     # its publishing workflow: started with the row, in the transaction that saves it
-    workflow = Workflow("publishing", autostart=True)
+    workflow = ExecutionField("publishing", autostart=True)
 
     class Meta:
         app_label = "articles"

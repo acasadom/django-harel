@@ -14,7 +14,7 @@ actions, which write the app's models.
 articles/machines/publishing.stm   orders/machines/fulfilment.stm, parcel.stm   ← the machines
 articles/actions.py                orders/actions.py                            ← their actions
 articles/api.py                    orders/api.py                                ← the REST API
-articles/models.py                 orders/models.py                             ← the models (Workflow)
+articles/models.py                 orders/models.py                             ← the models (ExecutionField)
 ```
 
 ## Run it with Docker

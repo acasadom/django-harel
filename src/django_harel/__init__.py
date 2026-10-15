@@ -1,12 +1,12 @@
 from django_harel.conf import definitions, distributed_runner, durable_runner
+from django_harel.fields import ExecutionField, instance_for
 from django_harel.store import DjangoStore
 from django_harel.transport import DjangoTransport
-from django_harel.workflow import Workflow, instance_for
 
 __all__ = [
     "DjangoStore",
     "DjangoTransport",
-    "Workflow",
+    "ExecutionField",
     "definitions",
     "distributed_runner",
     "durable_runner",

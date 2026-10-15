@@ -52,7 +52,7 @@ Everything goes through the connection Django already has, so it joins your tran
 ```python
 class Article(models.Model):
     ...
-    workflow = Workflow("publishing", autostart=True)
+    workflow = ExecutionField("publishing", autostart=True)
 
 
 with transaction.atomic():
@@ -94,7 +94,7 @@ article.workflow.state                      # "InReview"
 order.checkout.process("Pay", token=token)  # in the request: runs now, in this transaction
 ```
 
-`Workflow` ties a machine to a model; the runners underneath (`distributed_runner()`,
+`ExecutionField` ties a machine to a model; the runners underneath (`distributed_runner()`,
 `durable_runner()`) work for executions that don't belong to a row.
 
 The Django admin's **Machines** catalog lists every machine — its diagram, what it invokes, and

@@ -1,8 +1,10 @@
-"""A model's machine, as an attribute of the model.
+"""A model's machine, as a field on the model — the way a `Field`/`BoundField` pair works in
+Django's own forms: `ExecutionField` is declared on the class, `BoundExecution` is what you get
+back per row.
 
     class Article(models.Model):
         ...
-        workflow = Workflow("publishing", autostart=True)
+        workflow = ExecutionField("publishing", autostart=True)
 
     article.workflow.state            # "InReview"
     article.workflow.send("Submit")   # queued for the workers, in the current transaction
@@ -27,7 +29,7 @@ from harel.spec.states import Event
 from django_harel import conf
 
 
-class Workflow:
+class ExecutionField:
     """The machine `definition_id`, one execution per row of the model it is declared on.
 
     - `context(obj)` — the new execution's context; default `{"<model>_id": obj.pk}`.
@@ -83,17 +85,17 @@ class Workflow:
     def __get__(self, obj: Any, owner: type) -> Any:
         if obj is None:
             return self
-        return BoundWorkflow(self, obj)
+        return BoundExecution(self, obj)
 
     def _on_created(
         self, sender: type, instance: Any, created: bool, raw: bool = False, **kwargs: Any
     ) -> None:
         if created and not raw:  # not for fixtures loaded with loaddata
-            BoundWorkflow(self, instance).start()
+            BoundExecution(self, instance).start()
 
     def execution_id_for(self, obj: Any) -> str:
         if obj.pk is None:
-            raise ValueError(f"{obj!r} has no primary key yet: save it before using its workflow")
+            raise ValueError(f"{obj!r} has no primary key yet: save it before using its {self.name}")
         if self._execution_id is not None:
             return self._execution_id(obj)
         return f"{obj._meta.label_lower}.{self.name}:{obj.pk}"
@@ -104,20 +106,20 @@ class Workflow:
         return {f"{obj._meta.model_name}_id": obj.pk}
 
 
-class BoundWorkflow:
-    """A workflow for one row: its execution, and the ways to move it on."""
+class BoundExecution:
+    """One row's handle onto its execution: where it is, and the ways to move it on."""
 
-    def __init__(self, workflow: Workflow, obj: Any) -> None:
-        self.workflow = workflow
+    def __init__(self, field: ExecutionField, obj: Any) -> None:
+        self.field = field
         self.obj = obj
 
     def __repr__(self) -> str:
-        return f"<BoundWorkflow {self.id}>"
+        return f"<BoundExecution {self.id}>"
 
     @property
     def id(self) -> str:
         """The execution's id."""
-        return self.workflow.execution_id_for(self.obj)
+        return self.field.execution_id_for(self.obj)
 
     # --- where it is -----------------------------------------------------------------------------
     @property
@@ -147,12 +149,12 @@ class BoundWorkflow:
 
     # --- moving it on ----------------------------------------------------------------------------
     def start(self, *, priority: int = 0, **context: Any) -> Execution:
-        """Create the execution, with the workflow's context plus `context`: queued for the
+        """Create the execution, with the field's context plus `context`: queued for the
         workers, or run now with `run="request"`. Raises `ExecutionAlreadyExists` if there is one."""
-        ctx = {**self.workflow.context_for(self.obj), **context}
-        if self.workflow.run == "request":
-            return conf.durable_runner().create(self.workflow.definition_id, ctx, self.id, priority)
-        return conf.distributed_runner().create(self.workflow.definition_id, ctx, self.id, priority)
+        ctx = {**self.field.context_for(self.obj), **context}
+        if self.field.run == "request":
+            return conf.durable_runner().create(self.field.definition_id, ctx, self.id, priority)
+        return conf.distributed_runner().create(self.field.definition_id, ctx, self.id, priority)
 
     def send(self, kind: str, *, event_id: Optional[str] = None, **data: Any) -> None:
         """Queue the event `kind` (with `data`) for the workers, in the current transaction.
@@ -170,9 +172,9 @@ def _event(kind: str, event_id: Optional[str], data: dict) -> Event:
 
 
 def instance_for(execution: Execution) -> Optional[models.Model]:
-    """The row `execution` belongs to, for an execution a `Workflow` started with its default
-    id; None for any other (a child execution, or an id the workflow was told to make another
-    way)."""
+    """The row `execution` belongs to, for an execution an `ExecutionField` started with its
+    default id; None for any other (a child execution, or an id the field was told to make
+    another way)."""
     if execution.parent_id is not None or ":" not in execution.id:
         return None
     owner, pk = execution.id.split(":", 1)
@@ -181,10 +183,10 @@ def instance_for(execution: Execution) -> Optional[models.Model]:
         model = apps.get_model(label)
     except (LookupError, ValueError):
         return None
-    workflow = getattr(model, name, None)
-    if not isinstance(workflow, Workflow) or workflow._execution_id is not None:
+    field = getattr(model, name, None)
+    if not isinstance(field, ExecutionField) or field._execution_id is not None:
         return None
-    if workflow.definition_id != execution.definition_id:
+    if field.definition_id != execution.definition_id:
         return None
     try:
         return model._default_manager.get(pk=model._meta.pk.to_python(pk))
