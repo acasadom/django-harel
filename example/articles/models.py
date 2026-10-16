@@ -11,8 +11,8 @@ class Article(models.Model):
     reviewer_note = models.TextField(blank=True, default="")
     published_at = models.DateTimeField(null=True, blank=True)
 
-    # its publishing workflow: started with the row, in the transaction that saves it
-    workflow = ExecutionField("publishing", autostart=True)
+    # named after its own machine: started with the row, in the transaction that saves it
+    publishing = ExecutionField("publishing", autostart=True)
 
     class Meta:
         app_label = "articles"

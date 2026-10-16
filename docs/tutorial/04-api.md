@@ -36,7 +36,7 @@ class RejectIn(Schema):
 def create_article(request, payload: ArticleIn):
     with transaction.atomic():
         article = Article.objects.create(title=payload.title, body=payload.body, author=payload.author)
-    return {"article_id": article.pk, "execution_id": article.workflow.id}
+    return {"article_id": article.pk, "execution_id": article.publishing.id}
 
 
 @router.get("/{article_id}")
@@ -47,25 +47,25 @@ def get_article(request, article_id: int):
         "status": article.status,
         "reviewer_note": article.reviewer_note,
         "published_at": article.published_at,
-        "workflow": {"state": article.workflow.state, "outcome": article.workflow.outcome},
+        "publishing": {"state": article.publishing.state, "outcome": article.publishing.outcome},
     }
 
 
 @router.post("/{article_id}/submit")
 def submit_article(request, article_id: int):
-    Article.objects.get(pk=article_id).workflow.send("Submit")
+    Article.objects.get(pk=article_id).publishing.send("Submit")
     return {"queued": "Submit"}
 
 
 @router.post("/{article_id}/approve")
 def approve_article(request, article_id: int):
-    Article.objects.get(pk=article_id).workflow.send("Approve")
+    Article.objects.get(pk=article_id).publishing.send("Approve")
     return {"queued": "Approve"}
 
 
 @router.post("/{article_id}/reject")
 def reject_article(request, article_id: int, payload: RejectIn):
-    Article.objects.get(pk=article_id).workflow.send("Reject", note=payload.note)
+    Article.objects.get(pk=article_id).publishing.send("Reject", note=payload.note)
     return {"queued": "Reject"}
 ```
 
@@ -102,7 +102,7 @@ An event sent twice (a webhook retried by its sender, a double click) is process
 carries the same id:
 
 ```python
-order.workflow.send("PaymentSucceeded", event_id=stripe_event["id"], amount=amount)
+article.publishing.send("PaymentSucceeded", event_id=stripe_event["id"], amount=amount)
 ```
 
 ## Without a model

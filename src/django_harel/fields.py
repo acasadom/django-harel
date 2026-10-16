@@ -4,14 +4,14 @@ back per row.
 
     class Article(models.Model):
         ...
-        workflow = ExecutionField("publishing", autostart=True)
+        publishing = ExecutionField("publishing", autostart=True)
 
-    article.workflow.state            # "InReview"
-    article.workflow.send("Submit")   # queued for the workers, in the current transaction
-    article.workflow.process("Pay", token=token)  # run now, in this thread and transaction
+    article.publishing.state            # "InReview"
+    article.publishing.send("Submit")   # queued for the workers, in the current transaction
+    article.publishing.process("Pay", token=token)  # run now, in this thread and transaction
 
 The execution belongs to the row: its id comes from the model, the attribute and the primary
-key (`articles.article.workflow:42`), so the model needs no column for it. `instance_for(execution)`
+key (`articles.article.publishing:42`), so the model needs no column for it. `instance_for(execution)`
 goes the other way — the row an execution belongs to, e.g. in a signal receiver.
 """
 

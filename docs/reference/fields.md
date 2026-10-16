@@ -6,13 +6,13 @@ from django_harel import ExecutionField
 
 class Article(models.Model):
     ...
-    workflow = ExecutionField("publishing", autostart=True)
+    publishing = ExecutionField("publishing", autostart=True)
 ```
 
 A model's machine, one execution per row — declared like a `Field`, and what you get back per
 row (a `BoundExecution`) works like a `BoundField` does: `ExecutionField` is the class-level
-configuration, `article.workflow` is the row's own handle onto its execution. The execution's
-id comes from the model, the attribute and the primary key — `articles.article.workflow:42` —
+configuration, `article.publishing` is the row's own handle onto its execution. The execution's
+id comes from the model, the attribute and the primary key — `articles.article.publishing:42` —
 so the model needs no column for it.
 
 ## Options
@@ -30,7 +30,7 @@ fixtures (`loaddata`).
 
 ## On a row
 
-`article.workflow` is a `BoundExecution`:
+`article.publishing` is a `BoundExecution`:
 
 | | |
 |---|---|

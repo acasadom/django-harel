@@ -52,11 +52,11 @@ Everything goes through the connection Django already has, so it joins your tran
 ```python
 class Article(models.Model):
     ...
-    workflow = ExecutionField("publishing", autostart=True)
+    publishing = ExecutionField("publishing", autostart=True)
 
 
 with transaction.atomic():
-    article = Article.objects.create(...)   # its workflow starts with it
+    article = Article.objects.create(...)   # its publishing execution starts with it
 ```
 
 If the block rolls back, the execution and its queued `Start` roll back with the article. No
@@ -88,8 +88,8 @@ python manage.py harel_worker
 ## Use
 
 ```python
-article.workflow.send("Submit")             # background: queued, the worker runs it
-article.workflow.state                      # "InReview"
+article.publishing.send("Submit")             # background: queued, the worker runs it
+article.publishing.state                      # "InReview"
 
 order.checkout.process("Pay", token=token)  # in the request: runs now, in this transaction
 ```

@@ -27,7 +27,7 @@ docker compose up
 That starts PostgreSQL, the web app and a worker, migrates, creates the user `admin` (password
 `admin`) and some demo data. Then open:
 
-- **http://localhost:8000/admin/** — *Harel Statecharts › Executions*
+- **http://localhost:8000/admin/** — *Harel Statecharts › Machines* and *Executions*
 - **http://localhost:8000/api/docs** — the API, to try it from the browser
 
 The repository is mounted into the containers, and so is the harel checkout next to it
@@ -90,7 +90,7 @@ curl -s -X POST http://localhost:8000/api/articles/ \
 ```
 
 ```json
-{"article_id": 1, "execution_id": "articles.article.workflow:1", "status": "draft"}
+{"article_id": 1, "execution_id": "articles.article.publishing:1", "status": "draft"}
 ```
 
 The `Article` row, the harel execution and its queued `Start` commit in **one transaction**.
@@ -114,7 +114,7 @@ curl -s http://localhost:8000/api/articles/1
 ```
 
 ```json
-{"article_id": 1, "status": "draft", "workflow": {"status": "RUNNING", "state": "Draft", "outcome": null}, ...}
+{"article_id": 1, "status": "draft", "publishing": {"status": "RUNNING", "state": "Draft", "outcome": null}, ...}
 ```
 
 After the worker picks it up (watch terminal 2), the machine transitions
@@ -147,7 +147,7 @@ curl -s http://localhost:8000/api/articles/1
   "article_id": 1,
   "status": "published",
   "published_at": "2026-10-04T13:43:49.959Z",
-  "workflow": {"status": "DONE", "state": "Published", "outcome": "success"},
+  "publishing": {"status": "DONE", "state": "Published", "outcome": "success"},
   ...
 }
 ```
@@ -183,8 +183,9 @@ curl -s http://localhost:8000/api/articles/2
 
 ## The admin
 
-`http://localhost:8000/admin/` → **Harel › Executions** lists every workflow with its state;
-the example records each step (`"TRACE": True`), shown on an execution's page.
+`http://localhost:8000/admin/` → **Harel Statecharts › Machines** lists each machine, and
+**Executions** every instance with its state; the example records each step
+(`"TRACE": True`), shown on an execution's page.
 
 ## Interactive API docs
 

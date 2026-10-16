@@ -21,10 +21,10 @@ class Article(models.Model):
     reviewer_note = models.TextField(blank=True, default="")
     published_at  = models.DateTimeField(null=True, blank=True)
 
-    workflow = ExecutionField("publishing", autostart=True)
+    publishing = ExecutionField("publishing", autostart=True)
 ```
 
-`workflow` gives each article its own execution of the `publishing` machine, started when the
+`publishing` gives each article its own execution of the `publishing` machine, started when the
 article is created — in the same transaction — with the context `{"article_id": article.pk}`.
 `status`, `reviewer_note` and `published_at` are updated by the action functions below.
 
@@ -76,7 +76,7 @@ Events carry data in `event.data` (a plain `dict`). The `Reject` event declared 
 `event Reject { note: string }` in the DSL expects a `note` key. You send it as:
 
 ```python
-article.workflow.send("Reject", note="Needs more examples.")
+article.publishing.send("Reject", note="Needs more examples.")
 ```
 
 And the action reads it:

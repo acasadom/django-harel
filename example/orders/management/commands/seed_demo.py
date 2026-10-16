@@ -21,10 +21,10 @@ class Command(BaseCommand):
         with transaction.atomic():
             draft = Article.objects.create(title="A draft", body="...", author="Alice")
             in_review = Article.objects.create(title="Under review", body="...", author="Bob")
-            in_review.workflow.send("Submit")
+            in_review.publishing.send("Submit")
             published = Article.objects.create(title="Published", body="...", author="Carol")
-            published.workflow.send("Submit")
-            published.workflow.send("Approve")
+            published.publishing.send("Submit")
+            published.publishing.send("Approve")
 
             # waits for its payment: a reminder after a minute, abandoned two minutes later
             Order.objects.create(customer="Dana", items=["book", "lamp"])
