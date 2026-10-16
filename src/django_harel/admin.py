@@ -448,7 +448,11 @@ class HarelMachineAdmin(_DrawsDiagrams, admin.ModelAdmin):
         if not self.has_view_permission(request):
             raise PermissionDenied
         using = conf.get_setting("DATABASE")
-        rows = [_machine_row(summary) for summary in inspection.dashboard(using)]
+        defs = conf.definitions()
+        rows = [
+            _machine_row(summary, defs[summary.definition_id].version)
+            for summary in inspection.dashboard(using)
+        ]
         context = {
             **self.admin_site.each_context(request),
             "title": "Machines",
@@ -476,7 +480,7 @@ class HarelMachineAdmin(_DrawsDiagrams, admin.ModelAdmin):
             "definition_id": definition_id,
             "diagram": diagram_source(defn, []),
             "facts": _structural_facts_row(defn),
-            "row": _machine_row(inspection.machine_summary(definition_id, using)),
+            "row": _machine_row(inspection.machine_summary(definition_id, using), defn.version),
             "units": [_unit_row(u) for u in units],
             "units_more": more,
             "media": self.media,  # Mermaid/admin.js/admin.css: the change form gets this for free
@@ -518,10 +522,10 @@ def _humanize_age(seconds: float) -> str:
     return f"{days}d {hours}h"
 
 
-def _machine_row(summary) -> dict:
+def _machine_row(summary, version: int) -> dict:
     """A `MachineSummary` as the Machines templates render it: counts linked to the filtered
     changelist, failed executions linked individually, the queue's age humanized, a link to
-    the machine's own page."""
+    the machine's own page, and the machine's own declared version (`machine m version N`)."""
     counts = [
         {
             "status": status,
@@ -534,6 +538,7 @@ def _machine_row(summary) -> dict:
     return {
         "definition_id": summary.definition_id,
         "detail_url": reverse("admin:django_harel_harelmachine_detail", args=[summary.definition_id]),
+        "version": version,
         "total": sum(summary.counts.values()),
         "counts": counts,
         "failed_links": [_execution_link(i) for i in summary.failed_ids],

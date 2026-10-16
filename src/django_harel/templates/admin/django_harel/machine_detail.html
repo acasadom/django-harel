@@ -16,6 +16,7 @@
 {% endblock %}
 
 {% block content %}
+<p class="harel-muted">version {{ row.version }}</p>
 <pre class="harel-diagram">{{ diagram }}</pre>
 
 {% if facts.invokes or facts.orthogonal %}

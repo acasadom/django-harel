@@ -14,7 +14,7 @@
 <p class="harel-muted">No machine in DJANGO_HAREL['MACHINES'].</p>
 {% endif %}
 {% for row in rows %}
-<h2><a href="{{ row.detail_url }}">{{ row.definition_id }}</a> <span class="harel-muted">({{ row.total }})</span></h2>
+<h2><a href="{{ row.detail_url }}">{{ row.definition_id }}</a> <span class="harel-muted">v{{ row.version }} &middot; ({{ row.total }})</span></h2>
 <table class="harel-table harel-wide-table">
   <thead>
     <tr>
