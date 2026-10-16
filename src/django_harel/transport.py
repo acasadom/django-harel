@@ -33,15 +33,26 @@ GROUPS = "harel_transport_groups"
 _CANDIDATES = 16
 
 # SQLite: the group that waited longest with nothing in flight, and its head — harel's own claim
-# (`SqliteTransport`), so a native harel worker and this transport share the queue
+# (`SqliteTransport`), so a native harel worker and this transport share the queue. `{routing}`
+# is `_routing_filter`'s — empty when a claim isn't restricted to some machines.
 _SQLITE_CLAIM = (
     f"SELECT m.seq, m.group_id, m.event FROM {GROUPS} g "
     f"JOIN {MESSAGES} m ON m.seq = (SELECT MIN(seq) FROM {MESSAGES} WHERE group_id = g.group_id) "
-    f"WHERE g.priority >= %s AND NOT EXISTS ("
+    "WHERE g.priority >= %s{routing} AND NOT EXISTS ("
     f"  SELECT 1 FROM {MESSAGES} x WHERE x.group_id = g.group_id "
     f"  AND x.locked_by IS NOT NULL AND x.lock_expiry >= %s"
     f") ORDER BY g.last_claimed_at, g.rowid LIMIT 1"
 )
+
+
+def _routing_filter(routing_keys: Optional[frozenset[str]], column: str) -> tuple[str, list]:
+    """The SQL condition (`AND ...`) and its params restricting a claim to `routing_keys`'
+    groups — none when `routing_keys` is None. Mirrors harel's own `Transport`s: an empty
+    `routing_keys` is handled by the caller (`claim` returns `None` without a query)."""
+    if not routing_keys:
+        return "", []
+    keys = sorted(routing_keys)
+    return f" AND {column} IN ({', '.join(['%s'] * len(keys))})", keys
 
 
 class DjangoTransport:
@@ -103,39 +114,53 @@ class DjangoTransport:
         self._execute(f"INSERT INTO {QUEUE_LOG} (seq, published_at) VALUES (%s, %s)", [seq, self._clock()])
 
     # --- the protocol --------------------------------------------------------------------------
-    def publish(self, group_id: str, event: Event, priority: int = 0) -> None:
-        """Enqueue `event` in `group_id`. `priority` counts on the group's first publish only."""
+    def publish(
+        self, group_id: str, event: Event, priority: int = 0, routing_key: Optional[str] = None
+    ) -> None:
+        """Enqueue `event` in `group_id`. `priority` and `routing_key` count on the group's
+        first publish only; a group is deleted once drained, so every publish passes the
+        execution's own (harel's engine does this for us)."""
         payload = event.model_dump_json()
         vendor = self._vendor
         with self._atomic():
             if vendor == "sqlite":
                 seq = self._insert_message(group_id, payload)
                 self._execute(
-                    f"INSERT OR IGNORE INTO {GROUPS} (group_id, priority) VALUES (%s, %s)",
-                    [group_id, priority],
+                    f"INSERT OR IGNORE INTO {GROUPS} (group_id, priority, routing_key) VALUES (%s, %s, %s)",
+                    [group_id, priority, routing_key],
                 )
                 self._log_published(seq)
                 return
-            # create the group, or lock it if it's there (keeping its lease and priority)
+            # create the group, or lock it if it's there (keeping its lease, priority, routing_key)
             if vendor == "postgresql":
                 upsert = (
-                    f"INSERT INTO {GROUPS} (group_id, locked_by, lock_expiry, priority) "
-                    f"VALUES (%s, NULL, NULL, %s) ON CONFLICT (group_id) DO UPDATE SET priority = {GROUPS}.priority"
+                    f"INSERT INTO {GROUPS} (group_id, locked_by, lock_expiry, priority, routing_key) "
+                    f"VALUES (%s, NULL, NULL, %s, %s) ON CONFLICT (group_id) DO UPDATE SET priority = {GROUPS}.priority"
                 )
             else:
                 upsert = (
-                    f"INSERT INTO {GROUPS} (group_id, locked_by, lock_expiry, priority) "
-                    "VALUES (%s, NULL, NULL, %s) ON DUPLICATE KEY UPDATE priority = priority"
+                    f"INSERT INTO {GROUPS} (group_id, locked_by, lock_expiry, priority, routing_key) "
+                    "VALUES (%s, NULL, NULL, %s, %s) ON DUPLICATE KEY UPDATE priority = priority"
                 )
-            self._execute(upsert, [group_id, priority])
+            self._execute(upsert, [group_id, priority, routing_key])
             seq = self._insert_message(group_id, payload)
             self._log_published(seq)
 
-    def claim(self, worker_id: str, visibility: float, min_priority: int = 0) -> Optional[Lease]:
-        """Lease the head of the group that waited longest with nothing in flight."""
+    def claim(
+        self,
+        worker_id: str,
+        visibility: float,
+        min_priority: int = 0,
+        routing_keys: Optional[frozenset[str]] = None,
+    ) -> Optional[Lease]:
+        """Lease the head of the group that waited longest with nothing in flight, among
+        `routing_keys`' groups when given. An empty `routing_keys` claims nothing — harel's own
+        contract (`assert_machine_routing_contract`)."""
+        if routing_keys is not None and not routing_keys:
+            return None
         if self._vendor == "sqlite":
-            return self._claim_sqlite(worker_id, visibility, min_priority)
-        return self._claim_group_lock(worker_id, visibility, min_priority)
+            return self._claim_sqlite(worker_id, visibility, min_priority, routing_keys)
+        return self._claim_group_lock(worker_id, visibility, min_priority, routing_keys)
 
     def _doomed(self) -> bool:
         """The caller's transaction is set to roll back (a worker step whose commit lost its
@@ -211,12 +236,16 @@ class DjangoTransport:
         """Nothing to release: Django owns the connection."""
 
     # --- claims --------------------------------------------------------------------------------
-    def _claim_sqlite(self, worker_id: str, visibility: float, min_priority: int) -> Optional[Lease]:
+    def _claim_sqlite(
+        self, worker_id: str, visibility: float, min_priority: int, routing_keys: Optional[frozenset[str]]
+    ) -> Optional[Lease]:
         now = self._clock()
+        routing, routing_params = _routing_filter(routing_keys, "g.routing_key")
+        sql = _SQLITE_CLAIM.format(routing=routing)
         try:
             # always a savepoint: the lock error below is caught, and the transaction goes on
             with transaction.atomic(using=self.using):
-                row = self._fetchone(_SQLITE_CLAIM, [min_priority, now])
+                row = self._fetchone(sql, [min_priority, *routing_params, now])
                 if row is None:
                     return None
                 seq, group_id, payload = row
@@ -235,12 +264,14 @@ class DjangoTransport:
             raise
         return Lease(seq, group_id, Event.model_validate_json(payload), token=worker_id)
 
-    def _claim_group_lock(self, worker_id: str, visibility: float, min_priority: int) -> Optional[Lease]:
+    def _claim_group_lock(
+        self, worker_id: str, visibility: float, min_priority: int, routing_keys: Optional[frozenset[str]]
+    ) -> Optional[Lease]:
         now = self._clock()
         token = f"{worker_id}:{uuid.uuid4().hex}"
         with self._atomic():
             while True:
-                group_id = self._lock_claimable_group(now, min_priority)
+                group_id = self._lock_claimable_group(now, min_priority, routing_keys)
                 if group_id is None:
                     return None
                 self._execute(
@@ -255,15 +286,19 @@ class DjangoTransport:
                 # a group with no messages left (its drain was interrupted): drop it, try the next
                 self._execute(f"DELETE FROM {GROUPS} WHERE group_id = %s", [group_id])
 
-    def _lock_claimable_group(self, now: float, min_priority: int) -> Optional[str]:
+    def _lock_claimable_group(
+        self, now: float, min_priority: int, routing_keys: Optional[frozenset[str]]
+    ) -> Optional[str]:
         """Lock the claimable group served longest ago (never served first), skipping groups
-        another transaction holds; None if there is none."""
-        claimable = "(locked_by IS NULL OR lock_expiry < %s) AND priority >= %s"
+        another transaction holds, or whose `routing_key` isn't one of `routing_keys` when
+        given; None if there is none."""
+        routing, routing_params = _routing_filter(routing_keys, "routing_key")
+        claimable = f"(locked_by IS NULL OR lock_expiry < %s) AND priority >= %s{routing}"
         if self._vendor == "postgresql":
             row = self._fetchone(
                 f"SELECT group_id FROM {GROUPS} WHERE {claimable} "
                 "ORDER BY COALESCE(lock_expiry, 0), group_id LIMIT 1 FOR UPDATE SKIP LOCKED",
-                [now, min_priority],
+                [now, min_priority, *routing_params],
             )
             return row[0] if row is not None else None
         # InnoDB locks every row a locking read examines — sorting the candidates would lock
@@ -273,7 +308,7 @@ class DjangoTransport:
                 cur.execute(
                     f"SELECT group_id FROM {GROUPS} WHERE {claimable} "
                     f"ORDER BY COALESCE(lock_expiry, 0), group_id LIMIT {_CANDIDATES}",
-                    [now, min_priority],
+                    [now, min_priority, *routing_params],
                 )
                 candidates = [r[0] for r in cur.fetchall()]
             if not candidates:
@@ -281,7 +316,7 @@ class DjangoTransport:
             for group_id in candidates:
                 row = self._fetchone(
                     f"SELECT group_id FROM {GROUPS} WHERE group_id = %s AND {claimable} FOR UPDATE SKIP LOCKED",
-                    [group_id, now, min_priority],
+                    [group_id, now, min_priority, *routing_params],
                 )
                 if row is not None:
                     return row[0]

@@ -47,8 +47,12 @@ MYSQL_TRANSPORT = (
     f"INDEX {PREFIX}_transport_messages_by_group (group_id, seq)) {_MYSQL_TABLE}",
     f"CREATE TABLE IF NOT EXISTS {PREFIX}_transport_groups (group_id VARCHAR(255) PRIMARY KEY, "
     f"locked_by VARCHAR(255), lock_expiry DOUBLE, priority INT NOT NULL DEFAULT 0, "
+    f"routing_key VARCHAR(255), "
     # claim's order (least recently served first), as harel's PostgreSQL schema indexes it
-    f"INDEX {PREFIX}_transport_groups_claim_order ((COALESCE(lock_expiry, 0)), group_id)) {_MYSQL_TABLE}",
+    f"INDEX {PREFIX}_transport_groups_claim_order ((COALESCE(lock_expiry, 0)), group_id), "
+    # a worker given `--machines` claims in this order among its machines' groups
+    f"INDEX {PREFIX}_transport_groups_by_routing_key (routing_key, (COALESCE(lock_expiry, 0)), group_id)"
+    f") {_MYSQL_TABLE}",
 )
 
 
@@ -85,9 +89,47 @@ def definitions_drop_statement() -> str:
 # the PL/pgSQL functions harel's PostgreSQL backends call, with their signatures for DROP
 POSTGRES_FUNCTIONS = (
     f"{PREFIX}_commit_cas(text, text, text, bigint, text)",
-    f"{PREFIX}_claim(double precision, double precision, text, int)",
+    f"{PREFIX}_claim(double precision, double precision, text, int, text[])",
     f"{PREFIX}_ack(text, bigint, text, double precision)",
 )
+
+
+# the statements that bring {PREFIX}_transport_groups up to SCHEMA_VERSION 5 (routing_key) on a
+# database that already has the rest — found from the frozen copy where harel's schema has them;
+# SQLite's own `ALTER` isn't there (harel adds that column itself, conditionally, the moment its
+# own transport starts, since SQLite has no `ADD COLUMN IF NOT EXISTS`) — a migration only runs
+# once, so the plain, unconditional form is fine
+def routing_key_statements(vendor: str) -> tuple[str, ...]:
+    check_vendor(vendor)
+    if vendor == "sqlite":
+        index = next(
+            s for s in frozen.SQLITE_TRANSPORT if s.startswith("CREATE INDEX") and "routing_key" in s
+        )
+        return (f"ALTER TABLE {PREFIX}_transport_groups ADD COLUMN routing_key TEXT", index)
+    if vendor == "postgresql":
+        # "harel_claim(" catches the DROP (of the pre-routing 4-argument overload) too — it
+        # doesn't contain "FUNCTION harel_claim" contiguously ("FUNCTION IF EXISTS harel_claim")
+        return tuple(s for s in frozen.POSTGRES_TRANSPORT if "routing_key" in s or "harel_claim(" in s)
+    return (
+        f"ALTER TABLE {PREFIX}_transport_groups ADD COLUMN routing_key VARCHAR(255)",
+        f"CREATE INDEX {PREFIX}_transport_groups_by_routing_key ON {PREFIX}_transport_groups "
+        "(routing_key, (COALESCE(lock_expiry, 0)), group_id)",
+    )
+
+
+def routing_key_drop_statements(vendor: str) -> tuple[str, ...]:
+    """Reverse of `routing_key_statements`. Leaves PostgreSQL's `harel_claim` at its 5-argument
+    form rather than recreating the pre-routing one: a 4-argument call still resolves to it
+    (`p_min_priority`/`p_routing_keys` default), so nothing that worked before breaks."""
+    check_vendor(vendor)
+    index = f"{PREFIX}_transport_groups_by_routing_key"
+    table = f"{PREFIX}_transport_groups"
+    if vendor == "postgresql":
+        return (f"DROP INDEX IF EXISTS {index}", f"ALTER TABLE {table} DROP COLUMN IF EXISTS routing_key")
+    if vendor == "sqlite":
+        return (f"DROP INDEX IF EXISTS {index}", f"ALTER TABLE {table} DROP COLUMN routing_key")
+    return (f"ALTER TABLE {table} DROP INDEX {index}", f"ALTER TABLE {table} DROP COLUMN routing_key")
+
 
 # django-harel's own addition, outside harel's schema: when each queued message was published,
 # so the admin dashboard can show how long the oldest one has waited (harel's own schema has no

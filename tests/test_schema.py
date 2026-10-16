@@ -54,6 +54,13 @@ def test_harels_postgres_backends_read_what_django_writes():
         transport.ack(lease)
         assert transport.claim("native", 30) is None
 
+        # DjangoTransport's own SQL and harel's `harel_claim` function agree on routing_key too
+        DjangoTransport().publish("routed", Event(kind="Go"), routing_key="order")
+        assert transport.claim("native", 30, routing_keys=frozenset({"fulfilment"})) is None
+        lease = transport.claim("native", 30, routing_keys=frozenset({"order"}))
+        assert lease.group_id == "routed"
+        transport.ack(lease)
+
         # a version Django published, read by harel's own backend, and the other way round
         record = DefinitionRecord("job", 1, "abcd", {"main": "job.stm", "files": {}}, published_at=1.0)
         DjangoStore().publish_definition(record)

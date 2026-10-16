@@ -5,6 +5,7 @@ from django.db import connection
 from harel.testing import (
     assert_definitions_contract,
     assert_listing_contract,
+    assert_machine_routing_contract,
     assert_outbox_contract,
     assert_purge_contract,
     assert_transport_contract,
@@ -60,3 +61,12 @@ def test_transport(savepoints):
         return DjangoTransport(clock=clock, savepoints=savepoints)
 
     assert_transport_contract(make)
+
+
+@savepoints
+def test_transport_routes_by_machine(savepoints):
+    def make(clock):
+        _empty_tables()
+        return DjangoTransport(clock=clock, savepoints=savepoints)
+
+    assert_machine_routing_contract(make)

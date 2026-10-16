@@ -3,7 +3,7 @@
 import threading
 
 import pytest
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from harel.spec.states import Event
 
 from django_harel import conf
@@ -200,3 +200,17 @@ def test_the_command_builds_its_worker_from_the_options(monkeypatch):
     assert seen["worker"].execution == "inline"
     assert seen["idle"] == 0.5
     assert seen["atomic"] is True and seen["using"] == "default"
+    assert seen["worker"]._inline.machines is None  # unset: every machine
+
+
+def test_machines_restricts_which_machines_the_worker_claims(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(harel_worker, "run", lambda worker, stop, idle, **kw: seen.update(worker=worker))
+    call_command("harel_worker", "--machines", "order,fulfilment")
+
+    assert seen["worker"]._inline.machines == frozenset({"order", "fulfilment"})
+
+
+def test_machines_rejects_a_name_outside_django_harels_machines():
+    with pytest.raises(CommandError, match="pizza"):
+        call_command("harel_worker", "--machines", "order,pizza")

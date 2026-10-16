@@ -56,7 +56,7 @@ harel's own schema, with every table prefixed `harel_`:
 | `harel_trace` | each execution's recent steps, when tracing is on |
 | `harel_definitions` | published machine versions — `machine name version N { ... }` |
 | `harel_transport_messages` | the queue the workers read |
-| `harel_transport_groups` | one row per execution with queued events: its lease and priority |
+| `harel_transport_groups` | one row per execution with queued events: its lease, priority and routing key |
 
 On SQLite and PostgreSQL these are exactly the tables harel's own backends create, so harel's
 tools can read them too.

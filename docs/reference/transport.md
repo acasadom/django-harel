@@ -31,3 +31,10 @@ the claim's `min_priority`.
 
 A lease lasts `visibility` seconds. A worker that dies holding one releases it when it ends —
 or at once, when the worker's step was a transaction that rolled back.
+
+## Routing by machine
+
+A group also carries `routing_key` — the machine its tree started from, set by harel on the
+publish that creates the group (a tree's regions, fan-out instances and invoked submachines all
+carry their root's). `manage.py harel_worker --machines` claims use it to restrict a worker to
+some machines' groups; see [the worker reference](worker.md#dedicating-workers-to-machines).
