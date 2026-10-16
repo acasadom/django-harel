@@ -4,6 +4,7 @@ import pytest
 from django.db import connection
 from harel.engine import schema as harel_schema
 from harel.engine.execution import Execution
+from harel.engine.store.base import DefinitionRecord
 from harel.spec.states import Event
 
 from django_harel import _frozen_schema as frozen
@@ -52,6 +53,14 @@ def test_harels_postgres_backends_read_what_django_writes():
         assert lease.group_id == "shared" and lease.event.kind == "Go"
         transport.ack(lease)
         assert transport.claim("native", 30) is None
+
+        # a version Django published, read by harel's own backend, and the other way round
+        record = DefinitionRecord("job", 1, "abcd", {"main": "job.stm", "files": {}}, published_at=1.0)
+        DjangoStore().publish_definition(record)
+        assert store.load_definition("job", 1) == record
+        native = DefinitionRecord("order", 1, "efgh", {"main": "order.stm", "files": {}})
+        store.publish_definition(native)
+        assert DjangoStore().load_definition("order", 1) == native
     finally:
         store.close()
         transport.close()

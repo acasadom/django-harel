@@ -36,6 +36,9 @@ MYSQL_STORE = (
     f"context LONGTEXT NOT NULL) {_MYSQL_TABLE}",
     f"CREATE TABLE IF NOT EXISTS {PREFIX}_trace (execution_id VARCHAR(255) NOT NULL, idx INT NOT NULL, "
     f"entry LONGTEXT NOT NULL, PRIMARY KEY (execution_id, idx)) {_MYSQL_TABLE}",
+    f"CREATE TABLE IF NOT EXISTS {PREFIX}_definitions (definition_id VARCHAR(255) NOT NULL, "
+    f"version INT NOT NULL, digest VARCHAR(255) NOT NULL, source LONGTEXT NOT NULL, "
+    f"published_at DOUBLE, PRIMARY KEY (definition_id, version)) {_MYSQL_TABLE}",
 )
 
 MYSQL_TRANSPORT = (
@@ -56,9 +59,28 @@ TABLES = (
     f"{PREFIX}_timers",
     f"{PREFIX}_spawns",
     f"{PREFIX}_trace",
+    f"{PREFIX}_definitions",
     f"{PREFIX}_transport_messages",
     f"{PREFIX}_transport_groups",
 )
+
+# the one statement of {STORE} that creates {PREFIX}_definitions, for a migration that adds it
+# to a database that already has the rest (SCHEMA_VERSION 3 -> 4) — found rather than
+# hand-transcribed, so it can never drift from the frozen copy
+DEFINITIONS_TABLE = f"{PREFIX}_definitions"
+
+
+def definitions_create_statement(vendor: str) -> str:
+    check_vendor(vendor)
+    if vendor == "mysql":
+        return MYSQL_STORE[-1]
+    store = frozen.SQLITE_STORE if vendor == "sqlite" else frozen.POSTGRES_STORE
+    return next(s for s in store if DEFINITIONS_TABLE in s)
+
+
+def definitions_drop_statement() -> str:
+    return f"DROP TABLE IF EXISTS {DEFINITIONS_TABLE}"
+
 
 # the PL/pgSQL functions harel's PostgreSQL backends call, with their signatures for DROP
 POSTGRES_FUNCTIONS = (

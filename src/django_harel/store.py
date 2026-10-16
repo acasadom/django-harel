@@ -17,6 +17,7 @@ from django.db import DEFAULT_DB_ALIAS, IntegrityError, connections, transaction
 from harel.engine.execution import Execution, ExecutionPage, Status
 from harel.engine.store.base import (
     DEFAULT_TRACE_MAX,
+    DefinitionRecord,
     OutboxEntry,
     SpawnEntry,
     Step,
@@ -372,6 +373,36 @@ class DjangoStore:
             "DELETE FROM harel_timers WHERE execution_id = %s AND path = %s AND fire_at = %s",
             [execution_id, path, fire_at],
         )
+
+    def publish_definition(self, record: DefinitionRecord) -> DefinitionRecord:
+        """Store `record` unless a machine version with its `definition_id` and `version` is
+        stored already — a version is stored once. Returns what is stored: `record`, or the one
+        stored first (whose `digest` may differ)."""
+        self._insert_ignore(
+            "harel_definitions",
+            ("definition_id", "version", "digest", "source", "published_at"),
+            [
+                record.definition_id,
+                record.version,
+                record.digest,
+                json.dumps(record.source),
+                record.published_at,
+            ],
+        )
+        stored = self.load_definition(record.definition_id, record.version)
+        assert stored is not None  # just stored, or stored before
+        return stored
+
+    def load_definition(self, definition_id: str, version: int) -> Optional[DefinitionRecord]:
+        row = self._fetchone(
+            "SELECT digest, source, published_at FROM harel_definitions "
+            "WHERE definition_id = %s AND version = %s",
+            [definition_id, version],
+        )
+        if row is None:
+            return None
+        digest, source, published_at = row
+        return DefinitionRecord(definition_id, version, digest, json.loads(source), published_at)
 
     def close(self) -> None:
         """Nothing to release: Django owns the connection."""

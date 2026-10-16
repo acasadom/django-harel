@@ -3,6 +3,7 @@
 import pytest
 from django.db import connection
 from harel.testing import (
+    assert_definitions_contract,
     assert_listing_contract,
     assert_outbox_contract,
     assert_purge_contract,
@@ -45,6 +46,11 @@ def test_store_purge(savepoints):
 @savepoints
 def test_store_ids_with_prefix(savepoints):
     assert_ids_with_prefix_contract(DjangoStore(savepoints=savepoints), ns="ip_%-")
+
+
+@savepoints
+def test_store_definitions(savepoints):
+    assert_definitions_contract(DjangoStore(savepoints=savepoints), ns="def-")
 
 
 @savepoints

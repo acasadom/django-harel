@@ -54,6 +54,7 @@ harel's own schema, with every table prefixed `harel_`:
 | `harel_timers` | armed timeouts and when they fire |
 | `harel_spawns` | child executions a step is about to create |
 | `harel_trace` | each execution's recent steps, when tracing is on |
+| `harel_definitions` | published machine versions — `machine name version N { ... }` |
 | `harel_transport_messages` | the queue the workers read |
 | `harel_transport_groups` | one row per execution with queued events: its lease and priority |
 
