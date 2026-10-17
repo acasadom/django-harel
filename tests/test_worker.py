@@ -214,3 +214,27 @@ def test_machines_restricts_which_machines_the_worker_claims(monkeypatch):
 def test_machines_rejects_a_name_outside_django_harels_machines():
     with pytest.raises(CommandError, match="pizza"):
         call_command("harel_worker", "--machines", "order,pizza")
+
+
+def test_the_worker_publishes_its_machine_versions_at_startup(monkeypatch):
+    from django_harel.store import DjangoStore
+
+    monkeypatch.setattr(harel_worker, "run", lambda *a, **kw: None)
+    assert DjangoStore().load_definition("order", 1) is None
+
+    call_command("harel_worker")
+
+    record = DjangoStore().load_definition("order", 1)
+    assert record is not None and record.definition_id == "order"
+
+
+def test_the_worker_refuses_a_machine_changed_without_a_new_version(monkeypatch):
+    from harel.engine.store.base import DefinitionRecord
+
+    from django_harel.store import DjangoStore
+
+    monkeypatch.setattr(harel_worker, "run", lambda *a, **kw: None)
+    DjangoStore().publish_definition(DefinitionRecord("order", 1, "not-the-real-digest", {}, None))
+
+    with pytest.raises(CommandError, match="order"):
+        call_command("harel_worker")

@@ -9,6 +9,10 @@ With `DJANGO_HAREL['ATOMIC_STEP']` (the default) each event is one transaction: 
 what its actions write to the database, the machine's step and the ack commit together, or
 none of them does — a worker that dies mid-event leaves nothing behind, and the event is
 claimable again at once.
+
+Before it claims anything, the worker publishes the version of every machine in
+`DJANGO_HAREL['MACHINES']` — like a native harel worker does. A `.stm` edited without a new
+`version` is caught here (`CommandError`), before any execution meets the mismatch.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from contextlib import nullcontext
 
 from django.core.management.base import BaseCommand, CommandError
 from django.db import DEFAULT_DB_ALIAS, close_old_connections, transaction
+from harel.published import DefinitionConflict
 
 from django_harel import conf
 
@@ -64,7 +69,12 @@ class Command(BaseCommand):
         definitions = conf.definitions()
         machines = _parse_machines(options["machines"], definitions)
         atomic = conf.get_setting("ATOMIC_STEP")
-        worker = conf.worker_runner(atomic_step=atomic).worker(
+        runner = conf.worker_runner(atomic_step=atomic)
+        try:
+            conf.publish_machine_definitions(runner.store)
+        except DefinitionConflict as exc:
+            raise CommandError(str(exc)) from exc
+        worker = runner.worker(
             worker_id=worker_id,
             visibility=visibility,
             suspend_recheck=conf.get_setting("SUSPEND_RECHECK"),

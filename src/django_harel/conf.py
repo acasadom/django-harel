@@ -88,6 +88,23 @@ def definitions() -> dict[str, Definition]:
     return _cached("definitions", _load_definitions)
 
 
+def publish_machine_definitions(store: Any) -> None:
+    """Publish every machine's version from `DJANGO_HAREL['MACHINES']` to `store` — what a
+    native harel worker does for `HAREL_DEFINITIONS_DIR` at startup, so a `.stm` edited without
+    a new version is caught here, before any execution meets it. Raises `DefinitionConflict`
+    (`harel.published`) naming every version already published with other content.
+
+    Only the machines named in `MACHINES` itself — an `invoke`d submachine with its own file
+    isn't published under its own id (though it's still covered: its own in-memory digest check
+    runs the same way, just without the cross-process publish safety net)."""
+    from harel.published import definition_records, publish_definitions
+
+    machines: dict[str, str] = get_setting("MACHINES")
+    paths = sorted({_machine_path(path) for path in machines.values()})
+    records = [record for path in paths for record in definition_records(path)]
+    publish_definitions(store, records)
+
+
 def durable_runner() -> DurableRunner:
     """The runner that drives an execution in the caller's thread, to the end of each event:
     its actions run in the request, inside its transaction. For flows whose state the request

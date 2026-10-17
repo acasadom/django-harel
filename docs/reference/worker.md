@@ -16,6 +16,15 @@ there is nothing else to do. Stops on SIGTERM or SIGINT after the event in hand.
 | — | `SUSPEND_RECHECK` | `5` | seconds before an event for a suspended execution is looked at again |
 | — | `ATOMIC_STEP` | `True` | run each event in one transaction |
 
+## Machine versions, published at startup
+
+Before it claims anything, the worker publishes the version of every machine in
+`DJANGO_HAREL['MACHINES']` — like a native harel worker does for `HAREL_DEFINITIONS_DIR`. A
+`.stm` edited without a new `version` is caught right there (a `CommandError`, the worker
+never starts), instead of an execution meeting a machine whose source no longer matches what it
+started on. Publishing the same version again, unchanged, is a no-op — safe on every restart,
+and across however many worker processes start at once.
+
 ## Each event is a transaction
 
 With `ATOMIC_STEP`, claiming an event, what its actions write, the machine's step and the
