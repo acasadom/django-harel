@@ -57,4 +57,60 @@
   </tbody>
 </table>
 {% endfor %}
+
+<h2>Queues</h2>
+{% if queues %}
+<table class="harel-table harel-wide-table">
+  <thead>
+    <tr><th>Machine</th><th>Queued</th><th>Executions</th><th>Held</th><th>Oldest waiting</th><th>Live workers</th></tr>
+  </thead>
+  <tbody>
+    {% for q in queues %}
+    <tr>
+      <td>{{ q.machine }}</td>
+      <td>{{ q.messages }}</td>
+      <td>{{ q.executions }}</td>
+      <td>{{ q.held }}</td>
+      <td>{% if q.oldest_age %}{{ q.oldest_age }}{% else %}<span class="harel-muted">—</span>{% endif %}</td>
+      <td>
+        {% if q.unserved %}<span class="harel-alert">none claims it — is a worker running?</span>
+        {% elif q.workers %}{{ q.workers|join:", " }}
+        {% else %}<span class="harel-muted">—</span>{% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="harel-muted">Nothing queued.</p>
+{% endif %}
+
+<h2>Workers</h2>
+{% if workers %}
+<table class="harel-table harel-wide-table">
+  <thead>
+    <tr><th>Worker</th><th>Machines</th><th>Started</th><th>Last seen</th><th></th></tr>
+  </thead>
+  <tbody>
+    {% for w in workers %}
+    <tr>
+      <td>{{ w.worker_id }}</td>
+      <td>{{ w.machines }}</td>
+      <td>{{ w.started }}</td>
+      <td>{{ w.seen_ago }} ago</td>
+      <td>
+        {% if w.alive %}<span class="harel-muted">alive</span>
+        {% else %}<span class="harel-alert">gone</span>
+          {% if w.forget_url %}
+          <form method="post" action="{{ w.forget_url }}" style="display:inline">{% csrf_token %}<input type="submit" value="Forget"></form>
+          {% endif %}
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="harel-muted">No worker has recorded a heartbeat.</p>
+{% endif %}
 {% endblock %}

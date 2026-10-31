@@ -286,6 +286,61 @@ def test_overdue_timers_are_flagged(admin_client):
     assert "1 overdue — is a worker running?" in body
 
 
+def _now(monkeypatch, clock):
+    import django_harel.admin as harel_admin
+    import django_harel.inspection as inspection
+
+    monkeypatch.setattr(inspection.time, "time", clock)
+    monkeypatch.setattr(harel_admin.time, "time", clock)
+
+
+def test_a_queue_no_live_worker_claims_is_flagged(admin_client, monkeypatch):
+    from harel.engine.store.base import WorkerRecord
+
+    from django_harel.store import DjangoStore
+    from django_harel.transport import DjangoTransport
+
+    clock = Clock()
+    _now(monkeypatch, clock)
+    DjangoTransport(clock=clock).publish("o1", Event(kind="Go"), routing_key="order")
+    DjangoStore().record_worker(WorkerRecord("w-job", ("job",), 900.0, 1_000.0, 10.0))
+
+    body = admin_client.get(reverse(MACHINES)).content.decode()
+    assert "none claims it — is a worker running?" in body
+    assert "<td>job</td>" in body  # a dedicated worker's machine shows with nothing queued
+
+    DjangoStore().record_worker(WorkerRecord("w-all", None, 900.0, 1_000.0, 10.0))
+    body = admin_client.get(reverse(MACHINES)).content.decode()
+    assert "none claims it" not in body and "w-all" in body and "every machine" in body
+
+
+def test_a_gone_worker_can_be_forgotten_and_a_live_one_cannot(admin_client, client, monkeypatch):
+    from harel.engine.store.base import WorkerRecord
+
+    from django_harel.store import DjangoStore
+
+    clock = Clock()
+    _now(monkeypatch, clock)
+    store = DjangoStore()
+    store.record_worker(WorkerRecord("live", ("order",), 900.0, 995.0, 10.0))
+    store.record_worker(WorkerRecord("gone", None, 100.0, 200.0, 10.0))
+
+    body = admin_client.get(reverse(MACHINES)).content.decode()
+    assert "alive" in body and "gone" in body and "13m 20s ago" in body
+
+    forget = "admin:django_harel_harelmachine_forget_worker"
+    viewer = User.objects.create_user("viewer3", password="x", is_staff=True)
+    viewer.user_permissions.add(Permission.objects.get(codename="view_harelexecution"))
+    client.force_login(viewer)
+    assert "Forget" not in client.get(reverse(MACHINES)).content.decode()
+    assert client.post(reverse(forget, args=["gone"])).status_code == 403
+
+    assert admin_client.get(reverse(forget, args=["gone"])).status_code == 403
+    admin_client.post(reverse(forget, args=["live"]))
+    admin_client.post(reverse(forget, args=["gone"]))
+    assert [w.worker_id for w in store.list_workers()] == ["live"]
+
+
 def test_a_viewer_can_see_machines_without_operate_permission(client, jobs):
     viewer = User.objects.create_user("viewer2", password="x", is_staff=True)
     viewer.user_permissions.add(Permission.objects.get(codename="view_harelexecution"))

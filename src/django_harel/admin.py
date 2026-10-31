@@ -8,6 +8,7 @@ cancel's cleanup runs on a worker, like the machine's other actions.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,7 +19,7 @@ from django.core.exceptions import PermissionDenied
 from django.db import connections
 from django.db.models import Exists, OuterRef
 from django.db.models.expressions import RawSQL
-from django.http import Http404
+from django.http import Http404, HttpResponseRedirect
 from django.template.response import TemplateResponse
 from django.urls import path, reverse
 from django.utils.html import format_html, format_html_join
@@ -430,13 +431,21 @@ class HarelMachineAdmin(_DrawsDiagrams, admin.ModelAdmin):
     def has_delete_permission(self, request, obj=None):
         return False
 
+    def has_operate_permission(self, request):
+        return request.user.has_perm("django_harel.change_harelexecution")
+
     def get_urls(self):
         urls = [
+            path(
+                "workers/<path:worker_id>/forget/",
+                self.admin_site.admin_view(self.forget_worker_view),
+                name="django_harel_harelmachine_forget_worker",
+            ),
             path(
                 "<str:definition_id>/",
                 self.admin_site.admin_view(self.machine_detail_view),
                 name="django_harel_harelmachine_detail",
-            )
+            ),
         ]
         return urls + super().get_urls()
 
@@ -444,7 +453,8 @@ class HarelMachineAdmin(_DrawsDiagrams, admin.ModelAdmin):
         """One row per machine `conf.definitions()` knows (see `inspection.dashboard`): how
         many executions in each status, its failed ones linked, how big its queue is and how
         long the oldest message has waited, and timers overdue — the signal that no worker is
-        running. Each name links to the machine's own page."""
+        running. Each name links to the machine's own page. Below, the queue by the machine
+        a worker's `--machines` names, and every worker's heartbeat (`inspection.queues`)."""
         if not self.has_view_permission(request):
             raise PermissionDenied
         using = conf.get_setting("DATABASE")
@@ -458,8 +468,23 @@ class HarelMachineAdmin(_DrawsDiagrams, admin.ModelAdmin):
             "title": "Machines",
             "opts": self.model._meta,
             "rows": rows,
+            **_queues_context(inspection.queues(using), self.has_operate_permission(request)),
         }
         return TemplateResponse(request, "admin/django_harel/machines.html", context)
+
+    def forget_worker_view(self, request, worker_id: str):
+        """Remove a gone worker's heartbeat — one that crashed, and so never removed it. A live
+        one is refused: it would only record itself again on its next beat."""
+        if request.method != "POST" or not self.has_operate_permission(request):
+            raise PermissionDenied
+        store = DjangoStore(conf.get_setting("DATABASE"))
+        record = next((w for w in store.list_workers() if w.worker_id == worker_id), None)
+        if record is not None and record.alive(time.time()):
+            self.message_user(request, f"Worker {worker_id} is alive: not forgotten.", messages.WARNING)
+        else:
+            store.forget_worker(worker_id)
+            self.message_user(request, f"Forgot worker {worker_id}.")
+        return HttpResponseRedirect(reverse("admin:django_harel_harelmachine_changelist"))
 
     def machine_detail_view(self, request, definition_id: str):
         """One machine: its diagram, what it invokes and which of its states are orthogonal
@@ -547,6 +572,41 @@ def _machine_row(summary, version: int) -> dict:
         "queued": summary.queued,
         "oldest_queued_age": _humanize_age(summary.oldest_queued_age) if summary.oldest_queued_age else None,
         "overdue_timers": summary.overdue_timers,
+    }
+
+
+def _queues_context(queues, can_operate: bool) -> dict:
+    """`inspection.Queues` as the Machines template renders it: each queue's wait humanized,
+    each heartbeat's times, and whether it's gone (not seen for three beats, harel's rule)."""
+    now = time.time()
+    return {
+        "queues": [
+            {
+                "machine": row.machine or "(no routing key)",
+                "messages": row.messages,
+                "executions": row.executions,
+                "held": row.held,
+                "oldest_age": _humanize_age(now - row.oldest_published_at)
+                if row.oldest_published_at is not None
+                else None,
+                "workers": row.workers,
+                "unserved": row.unserved,
+            }
+            for row in queues.rows
+        ],
+        "workers": [
+            {
+                "worker_id": w.worker_id,
+                "machines": ", ".join(w.machines) if w.machines is not None else "every machine",
+                "started": _when(w.started_at),
+                "seen_ago": _humanize_age(max(0.0, now - w.seen_at)),
+                "alive": w.alive(now),
+                "forget_url": reverse("admin:django_harel_harelmachine_forget_worker", args=[w.worker_id])
+                if can_operate
+                else None,
+            }
+            for w in queues.workers
+        ],
     }
 
 

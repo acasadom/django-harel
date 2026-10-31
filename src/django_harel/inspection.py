@@ -10,12 +10,13 @@ from typing import Optional
 from django.db import connections
 from harel.definition.model import Definition, NodeKind
 from harel.engine.execution import Execution, Status
+from harel.engine.store.base import WorkerRecord
 from harel.engine.transport.base import PARKED
 from harel.spec.states import Event
 
 from django_harel import conf
 from django_harel.store import DjangoStore, json_field, like_prefix
-from django_harel.transport import GROUPS, MESSAGES
+from django_harel.transport import GROUPS, MESSAGES, DjangoTransport
 
 
 def machine_for(exe: Execution) -> Optional[Definition]:
@@ -178,6 +179,54 @@ def dashboard(using: str = "default") -> list[MachineSummary]:
     `DJANGO_HAREL['MACHINES']`, and the submachines they `invoke` — a fan-out's parcel, say —
     since those run as their own executions under their own id too."""
     return [machine_summary(definition_id, using) for definition_id in conf.definitions()]
+
+
+# --- the workers: their heartbeats, and the queue they drain -----------------------------------
+
+
+@dataclass(frozen=True)
+class QueueRow:
+    """The work queued for executions whose tree started from `machine` — the routing key a
+    worker's `--machines` names, so a submachine's work counts under its root — and the live
+    workers that claim it. harel's monitor shows the same rows (`harel.tui.model.QueueRow`)."""
+
+    machine: Optional[str]  # None: messages published without a routing key
+    messages: int
+    executions: int
+    held: int  # executions a worker holds the lease of right now
+    oldest_published_at: Optional[float]
+    workers: tuple[str, ...]
+
+    @property
+    def unserved(self) -> bool:
+        """Work is waiting and no live worker claims it."""
+        return self.messages > 0 and not self.workers
+
+
+@dataclass(frozen=True)
+class Queues:
+    rows: list[QueueRow]
+    workers: list[WorkerRecord]  # every heartbeat recorded, live or gone
+
+
+def queues(using: str = "default") -> Queues:
+    """The queue by machine, with the live workers that claim each one — plus the machines a
+    live worker is dedicated to with nothing queued, so its capacity shows too."""
+    now = time.time()
+    workers = DjangoStore(using).list_workers()
+    live = [w for w in workers if w.alive(now)]
+    rows = []
+    for b in DjangoTransport(using).backlog().machines:
+        covering = tuple(w.worker_id for w in live if w.covers(b.routing_key))
+        rows.append(
+            QueueRow(
+                b.routing_key, b.messages, b.executions or 0, b.held or 0, b.oldest_published_at, covering
+            )
+        )
+    queued = {r.machine for r in rows}
+    for machine in sorted({m for w in live for m in (w.machines or ())} - queued):
+        rows.append(QueueRow(machine, 0, 0, 0, None, tuple(w.worker_id for w in live if w.covers(machine))))
+    return Queues(rows, workers)
 
 
 # --- a machine's shape, independent of any execution --------------------------------------------

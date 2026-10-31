@@ -27,6 +27,20 @@ same thing: **no worker is running** for that machine (or it's stuck). That's th
 useful thing this page tells you, and it needs nothing instrumented — it reads the same tables
 `manage.py harel_worker` does.
 
+### Queues and workers
+
+Below the machines, the page shows what harel's own monitor shows:
+
+- **Queues**: the queued work by the machine a worker's `--machines` names. That is the
+  execution tree's root machine, so a submachine's work counts under its root. Each row shows the
+  waiting messages, the executions they are for, how many of those a worker holds right now, the
+  oldest wait, and the live workers that claim it. Work that no live worker claims is flagged. A
+  machine that a live worker is dedicated to shows too, even with nothing queued.
+- **Workers**: every heartbeat `manage.py harel_worker` records (see [The worker](worker)): its
+  machines, when it started, when it was last seen. A worker not seen for three beats is
+  **gone**: it crashed, or stopped without removing its record. **Forget** removes a gone
+  worker's record; a live one is refused, since its next beat would record it again.
+
 ## A machine's own page
 
 Click a machine's name for:
@@ -112,5 +126,5 @@ and the machine carries on from that state with its next event.
 
 ## Permissions
 
-They are offered to users with the `django_harel.change_harelexecution` permission; the
-`view_harelexecution` permission shows the pages without them.
+They are offered to users with the `django_harel.change_harelexecution` permission, and so is
+**Forget** on a gone worker; the `view_harelexecution` permission shows the pages without them.
