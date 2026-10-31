@@ -1,5 +1,7 @@
 """The migration creates harel's own schema."""
 
+import importlib
+
 import pytest
 from django.db import connection
 from harel.engine import schema as harel_schema
@@ -7,9 +9,11 @@ from harel.engine.execution import Execution
 from harel.engine.store.base import DefinitionRecord, WorkerRecord
 from harel.spec.states import Event
 
-from django_harel import _frozen_schema as frozen
+from django_harel.schema import TABLES
 from django_harel.store import DjangoStore
 from django_harel.transport import DjangoTransport
+
+frozen = importlib.import_module("django_harel.migrations.0001_initial")
 
 
 def test_the_frozen_schema_is_harels():
@@ -21,6 +25,7 @@ def test_the_frozen_schema_is_harels():
     assert list(frozen.SQLITE_TRANSPORT) == harel_schema.transport_schema("sqlite")
     assert list(frozen.POSTGRES_STORE) == harel_schema.store_schema("postgres")
     assert list(frozen.POSTGRES_TRANSPORT) == harel_schema.transport_schema("postgres")
+    assert frozen.TABLES == TABLES
 
 
 @pytest.mark.django_db(transaction=True)
