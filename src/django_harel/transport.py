@@ -24,7 +24,7 @@ from django.db import DEFAULT_DB_ALIAS, OperationalError, connections, transacti
 from harel.engine.transport.base import PARKED, Backlog, Lease, MachineBacklog
 from harel.spec.states import Event
 
-from django_harel.schema import QUEUE_LOG, check_vendor
+from django_harel.schema import check_vendor
 
 MESSAGES = "harel_transport_messages"
 GROUPS = "harel_transport_groups"
@@ -108,22 +108,12 @@ class DjangoTransport:
             cur.execute(sql, params)
             return cur.fetchone()
 
-    def _insert_message(self, group_id: str, payload: str) -> int:
-        """Insert a queued message, stamped with when it was published; return its `seq`."""
-        sql = f"INSERT INTO {MESSAGES} (group_id, event, published_at) VALUES (%s, %s, %s)"
-        params = [group_id, payload, self._clock()]
-        with self._connection.cursor() as cur:
-            if self._connection.features.can_return_columns_from_insert:
-                cur.execute(f"{sql} RETURNING seq", params)
-                return cur.fetchone()[0]
-            cur.execute(sql, params)
-            return cur.lastrowid
-
-    def _log_published(self, seq: int) -> None:
-        """When `seq` was published, for the dashboard's "oldest queued" (see
-        `django_harel.schema.QUEUE_LOG`) — outside harel's own schema, so a message published
-        before this table existed has no row, and its age shows as unknown rather than wrong."""
-        self._execute(f"INSERT INTO {QUEUE_LOG} (seq, published_at) VALUES (%s, %s)", [seq, self._clock()])
+    def _insert_message(self, group_id: str, payload: str) -> None:
+        """Insert a queued message, stamped with when it was published."""
+        self._execute(
+            f"INSERT INTO {MESSAGES} (group_id, event, published_at) VALUES (%s, %s, %s)",
+            [group_id, payload, self._clock()],
+        )
 
     # --- the protocol --------------------------------------------------------------------------
     def publish(
@@ -136,12 +126,11 @@ class DjangoTransport:
         vendor = self._vendor
         with self._atomic():
             if vendor == "sqlite":
-                seq = self._insert_message(group_id, payload)
+                self._insert_message(group_id, payload)
                 self._execute(
                     f"INSERT OR IGNORE INTO {GROUPS} (group_id, priority, routing_key) VALUES (%s, %s, %s)",
                     [group_id, priority, routing_key],
                 )
-                self._log_published(seq)
                 return
             # create the group, or lock it if it's there (keeping its lease, priority, routing_key)
             if vendor == "postgresql":
@@ -155,8 +144,7 @@ class DjangoTransport:
                     "VALUES (%s, NULL, NULL, %s, %s) ON DUPLICATE KEY UPDATE priority = priority"
                 )
             self._execute(upsert, [group_id, priority, routing_key])
-            seq = self._insert_message(group_id, payload)
-            self._log_published(seq)
+            self._insert_message(group_id, payload)
 
     def claim(
         self,
@@ -187,7 +175,6 @@ class DjangoTransport:
         if self._vendor == "sqlite":
             with self._atomic():
                 self._execute(f"DELETE FROM {MESSAGES} WHERE seq = %s", [lease.seq])
-                self._execute(f"DELETE FROM {QUEUE_LOG} WHERE seq = %s", [lease.seq])
                 self._execute(
                     f"DELETE FROM {GROUPS} WHERE group_id = %s AND NOT EXISTS "
                     f"(SELECT 1 FROM {MESSAGES} WHERE group_id = %s)",
@@ -201,7 +188,6 @@ class DjangoTransport:
             if holder is None or holder[0] != lease.token:
                 return  # the lease expired and another worker holds the group now
             self._execute(f"DELETE FROM {MESSAGES} WHERE seq = %s", [lease.seq])
-            self._execute(f"DELETE FROM {QUEUE_LOG} WHERE seq = %s", [lease.seq])
             # a locking read: it sees what publishes committed while we waited for the group
             more = self._fetchone(
                 f"SELECT seq FROM {MESSAGES} WHERE group_id = %s ORDER BY seq LIMIT 1 FOR UPDATE",

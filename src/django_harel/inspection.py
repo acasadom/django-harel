@@ -14,7 +14,6 @@ from harel.engine.transport.base import PARKED
 from harel.spec.states import Event
 
 from django_harel import conf
-from django_harel.schema import QUEUE_LOG
 from django_harel.store import DjangoStore, json_field, like_prefix
 from django_harel.transport import GROUPS, MESSAGES
 
@@ -148,9 +147,8 @@ def machine_summary(definition_id: str, using: str = "default") -> MachineSummar
         failed_ids = [r[0] for r in cur.fetchall()]
 
         cur.execute(
-            f"SELECT COUNT(*), MIN(p.published_at) FROM {MESSAGES} m "
+            f"SELECT COUNT(*), MIN(m.published_at) FROM {MESSAGES} m "
             f"JOIN harel_executions e ON e.id = m.group_id "
-            f"LEFT JOIN {QUEUE_LOG} p ON p.seq = m.seq "
             "WHERE e.definition_id = %s",
             [definition_id],
         )

@@ -167,11 +167,9 @@ def published_at_drop_statement() -> str:
     return f"ALTER TABLE {MESSAGES_TABLE} DROP COLUMN published_at"
 
 
-# django-harel's own addition, outside harel's schema: when each queued message was published,
-# so the admin dashboard can show how long the oldest one has waited (harel's own schema has no
-# timestamp on a message). Keyed by the message's `seq`, written by `DjangoTransport.publish()`
-# and dropped by `ack()` along with the message — so a row's absence means either the message
-# was never tracked (published before this table existed) or it's gone.
+# Retired by `0007_drop_queue_log`: django-harel's own table, from before harel's schema had
+# `harel_transport_messages.published_at`, recording when each queued message was published.
+# Kept only for the migrations that create and drop it.
 QUEUE_LOG = "django_harel_queue_log"
 
 _QUEUE_LOG_SQLITE = (
@@ -196,9 +194,9 @@ def queue_log_drop_statement() -> str:
     return f"DROP TABLE IF EXISTS {QUEUE_LOG}"
 
 
-# `TABLES` plus django-harel's own `QUEUE_LOG` — every table a test or a fixture should empty
-# between runs
-ALL_TABLES = TABLES + (QUEUE_LOG,)
+# every table a test or a fixture should empty between runs: harel's own, now that django-harel
+# has none of its own
+ALL_TABLES = TABLES
 
 
 SUPPORTED_VENDORS = ("sqlite", "postgresql", "mysql")
