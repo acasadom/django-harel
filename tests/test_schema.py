@@ -4,7 +4,7 @@ import pytest
 from django.db import connection
 from harel.engine import schema as harel_schema
 from harel.engine.execution import Execution
-from harel.engine.store.base import DefinitionRecord
+from harel.engine.store.base import DefinitionRecord, WorkerRecord
 from harel.spec.states import Event
 
 from django_harel import _frozen_schema as frozen
@@ -68,6 +68,17 @@ def test_harels_postgres_backends_read_what_django_writes():
         native = DefinitionRecord("order", 1, "efgh", {"main": "order.stm", "files": {}})
         store.publish_definition(native)
         assert DjangoStore().load_definition("order", 1) == native
+
+        # a heartbeat, and the backlog's publish times, either way too
+        DjangoStore().record_worker(WorkerRecord("django", ("order",), 1.0, 2.0, 10.0))
+        store.record_worker(WorkerRecord("native", None, 3.0, 4.0, 10.0))
+        assert [w.worker_id for w in store.list_workers()] == ["django", "native"]
+        assert DjangoStore().list_workers() == store.list_workers()
+        DjangoTransport(clock=lambda: 7.0).publish("aging", Event(kind="Go"), routing_key="order")
+        assert [(b.routing_key, b.oldest_published_at) for b in transport.backlog().machines] == [
+            ("order", 7.0)
+        ]
+        assert DjangoTransport().backlog() == transport.backlog()
     finally:
         store.close()
         transport.close()

@@ -3,12 +3,15 @@
 import pytest
 from django.db import connection
 from harel.testing import (
+    assert_backlog_contract,
     assert_definitions_contract,
     assert_listing_contract,
     assert_machine_routing_contract,
     assert_outbox_contract,
+    assert_pending_work_contract,
     assert_purge_contract,
     assert_transport_contract,
+    assert_workers_contract,
 )
 from harel.testing.purge import assert_ids_with_prefix_contract
 
@@ -55,6 +58,16 @@ def test_store_definitions(savepoints):
 
 
 @savepoints
+def test_store_pending_work(savepoints):
+    assert_pending_work_contract(DjangoStore(savepoints=savepoints), ns="pw-")
+
+
+@savepoints
+def test_store_workers(savepoints):
+    assert_workers_contract(DjangoStore(savepoints=savepoints), ns="wk-")
+
+
+@savepoints
 def test_transport(savepoints):
     def make(clock):
         _empty_tables()
@@ -70,3 +83,12 @@ def test_transport_routes_by_machine(savepoints):
         return DjangoTransport(clock=clock, savepoints=savepoints)
 
     assert_machine_routing_contract(make)
+
+
+@savepoints
+def test_transport_backlog(savepoints):
+    def make(clock):
+        _empty_tables()
+        return DjangoTransport(clock=clock, savepoints=savepoints)
+
+    assert_backlog_contract(make)

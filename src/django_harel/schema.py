@@ -39,11 +39,13 @@ MYSQL_STORE = (
     f"CREATE TABLE IF NOT EXISTS {PREFIX}_definitions (definition_id VARCHAR(255) NOT NULL, "
     f"version INT NOT NULL, digest VARCHAR(255) NOT NULL, source LONGTEXT NOT NULL, "
     f"published_at DOUBLE, PRIMARY KEY (definition_id, version)) {_MYSQL_TABLE}",
+    f"CREATE TABLE IF NOT EXISTS {PREFIX}_workers (worker_id VARCHAR(255) PRIMARY KEY, "
+    f"record LONGTEXT NOT NULL) {_MYSQL_TABLE}",
 )
 
 MYSQL_TRANSPORT = (
     f"CREATE TABLE IF NOT EXISTS {PREFIX}_transport_messages (seq BIGINT AUTO_INCREMENT PRIMARY KEY, "
-    f"group_id VARCHAR(255) NOT NULL, event LONGTEXT NOT NULL, "
+    f"group_id VARCHAR(255) NOT NULL, event LONGTEXT NOT NULL, published_at DOUBLE, "
     f"INDEX {PREFIX}_transport_messages_by_group (group_id, seq)) {_MYSQL_TABLE}",
     f"CREATE TABLE IF NOT EXISTS {PREFIX}_transport_groups (group_id VARCHAR(255) PRIMARY KEY, "
     f"locked_by VARCHAR(255), lock_expiry DOUBLE, priority INT NOT NULL DEFAULT 0, "
@@ -64,6 +66,7 @@ TABLES = (
     f"{PREFIX}_spawns",
     f"{PREFIX}_trace",
     f"{PREFIX}_definitions",
+    f"{PREFIX}_workers",
     f"{PREFIX}_transport_messages",
     f"{PREFIX}_transport_groups",
 )
@@ -76,10 +79,13 @@ DEFINITIONS_TABLE = f"{PREFIX}_definitions"
 
 def definitions_create_statement(vendor: str) -> str:
     check_vendor(vendor)
-    if vendor == "mysql":
-        return MYSQL_STORE[-1]
-    store = frozen.SQLITE_STORE if vendor == "sqlite" else frozen.POSTGRES_STORE
-    return next(s for s in store if DEFINITIONS_TABLE in s)
+    return _store_create_statement(vendor, DEFINITIONS_TABLE)
+
+
+def _store_create_statement(vendor: str, table: str) -> str:
+    """The statement of the frozen (or MySQL) store schema that creates `table`."""
+    store = {"sqlite": frozen.SQLITE_STORE, "postgresql": frozen.POSTGRES_STORE}.get(vendor, MYSQL_STORE)
+    return next(s for s in store if s.startswith(f"CREATE TABLE IF NOT EXISTS {table} "))
 
 
 def definitions_drop_statement() -> str:
@@ -129,6 +135,36 @@ def routing_key_drop_statements(vendor: str) -> tuple[str, ...]:
     if vendor == "sqlite":
         return (f"DROP INDEX IF EXISTS {index}", f"ALTER TABLE {table} DROP COLUMN routing_key")
     return (f"ALTER TABLE {table} DROP INDEX {index}", f"ALTER TABLE {table} DROP COLUMN routing_key")
+
+
+# SCHEMA_VERSION 5 -> 6, on a database that already has the rest: the workers' heartbeats
+# (`{PREFIX}_workers`, which `harel_worker` records) and when each queued message was published
+# (`{PREFIX}_transport_messages.published_at`, read by `DjangoTransport.backlog`) — found from the
+# frozen copy where harel's schema has them. PostgreSQL's is an `ADD COLUMN IF NOT EXISTS`; SQLite
+# and MySQL have no such form, so the migration checks the column first
+WORKERS_TABLE = f"{PREFIX}_workers"
+MESSAGES_TABLE = f"{PREFIX}_transport_messages"
+
+
+def workers_create_statement(vendor: str) -> str:
+    check_vendor(vendor)
+    return _store_create_statement(vendor, WORKERS_TABLE)
+
+
+def workers_drop_statement() -> str:
+    return f"DROP TABLE IF EXISTS {WORKERS_TABLE}"
+
+
+def published_at_statement(vendor: str) -> str:
+    check_vendor(vendor)
+    if vendor == "postgresql":
+        return next(s for s in frozen.POSTGRES_TRANSPORT if s.startswith("ALTER") and "published_at" in s)
+    kind = "REAL" if vendor == "sqlite" else "DOUBLE"
+    return f"ALTER TABLE {MESSAGES_TABLE} ADD COLUMN published_at {kind}"
+
+
+def published_at_drop_statement() -> str:
+    return f"ALTER TABLE {MESSAGES_TABLE} DROP COLUMN published_at"
 
 
 # django-harel's own addition, outside harel's schema: when each queued message was published,

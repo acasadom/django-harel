@@ -23,7 +23,7 @@ classifiers = [
 ]
 requires-python = ">=3.11,<4"
 dependencies = [
-    "harel>=0.9.0",
+    "harel>=0.10.0",
     "django>=5.2",
 ]
 
@@ -39,7 +39,7 @@ dev = [
     "ruff",
     "mypy",
     "django-stubs",
-    "harel[lsp]>=0.9.0",
+    "harel[lsp]>=0.10.0",
     "django-ninja",
     "psycopg[binary]>=3.3.6",
     "pymysql>=1.2.3",
@@ -82,5 +82,5 @@ django_settings_module = "tests.settings"
 
 [tool.uv.sources]
 # develop against the harel checkout next to this one (editable): a fix there is seen here at
-# once. Published metadata still says harel>=0.9.0; CI checks harel out at ../harel.
+# once. Published metadata still says harel>=0.10.0; CI checks harel out at ../harel.
 harel = { path = "../harel", editable = true }

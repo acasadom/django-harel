@@ -1,11 +1,11 @@
-"""harel's SQL schema version 5 under the prefix "harel", frozen as harel 0.9 generates it.
+"""harel's SQL schema version 6 under the prefix "harel", frozen as harel 0.10 generates it.
 
 Generated from `harel.engine.schema` (`store_schema` / `transport_schema`) and never edited:
 a migration must create the same tables whatever harel version is installed when it runs.
 `tests/test_schema.py` checks the copy still matches the installed harel.
 """
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 SQLITE_STORE = (
@@ -16,6 +16,7 @@ SQLITE_STORE = (
     "CREATE TABLE IF NOT EXISTS harel_spawns (seq INTEGER PRIMARY KEY AUTOINCREMENT, parent_id TEXT NOT NULL, child_id TEXT NOT NULL, root_path TEXT NOT NULL, context TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS harel_trace (execution_id TEXT NOT NULL, idx INTEGER NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (execution_id, idx))",
     "CREATE TABLE IF NOT EXISTS harel_definitions (definition_id TEXT NOT NULL, version INTEGER NOT NULL, digest TEXT NOT NULL, source TEXT NOT NULL, published_at REAL, PRIMARY KEY (definition_id, version))",
+    "CREATE TABLE IF NOT EXISTS harel_workers (worker_id TEXT PRIMARY KEY, record TEXT NOT NULL)",
 )
 
 POSTGRES_STORE = (
@@ -26,11 +27,12 @@ POSTGRES_STORE = (
     "CREATE TABLE IF NOT EXISTS harel_spawns (seq BIGSERIAL PRIMARY KEY, parent_id TEXT NOT NULL, child_id TEXT NOT NULL, root_path TEXT NOT NULL, context TEXT NOT NULL)",
     "CREATE TABLE IF NOT EXISTS harel_trace (execution_id TEXT NOT NULL, idx INT NOT NULL, entry TEXT NOT NULL, PRIMARY KEY (execution_id, idx))",
     "CREATE TABLE IF NOT EXISTS harel_definitions (definition_id TEXT NOT NULL, version INT NOT NULL, digest TEXT NOT NULL, source TEXT NOT NULL, published_at DOUBLE PRECISION, PRIMARY KEY (definition_id, version))",
+    "CREATE TABLE IF NOT EXISTS harel_workers (worker_id TEXT PRIMARY KEY, record TEXT NOT NULL)",
     "CREATE OR REPLACE FUNCTION harel_commit_cas(p_id text, p_defn text, p_data text, p_old bigint, p_event text)\nRETURNS boolean AS $$\nDECLARE n int; row_exists boolean;\nBEGIN\n  UPDATE harel_executions SET data = p_data, version = p_old + 1 WHERE id = p_id AND version = p_old;\n  GET DIAGNOSTICS n = ROW_COUNT;\n  IF n = 0 THEN\n    SELECT EXISTS (SELECT 1 FROM harel_executions WHERE id = p_id) INTO row_exists;\n    IF p_old = 0 AND NOT row_exists THEN\n      INSERT INTO harel_executions (id, definition_id, data, version) VALUES (p_id, p_defn, p_data, 1);\n    ELSE\n      RETURN false;\n    END IF;\n  END IF;\n  IF p_event <> '' THEN\n    INSERT INTO harel_processed_events (execution_id, event_id) VALUES (p_id, p_event) ON CONFLICT DO NOTHING;\n  END IF;\n  RETURN true;\nEND; $$ LANGUAGE plpgsql",
 )
 
 SQLITE_TRANSPORT = (
-    "CREATE TABLE IF NOT EXISTS harel_transport_messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT NOT NULL, event TEXT NOT NULL, locked_by TEXT, lock_expiry REAL)",
+    "CREATE TABLE IF NOT EXISTS harel_transport_messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, group_id TEXT NOT NULL, event TEXT NOT NULL, locked_by TEXT, lock_expiry REAL, published_at REAL)",
     "CREATE TABLE IF NOT EXISTS harel_transport_groups (group_id TEXT PRIMARY KEY, last_claimed_at REAL NOT NULL DEFAULT 0.0, priority INT NOT NULL DEFAULT 0, routing_key TEXT)",
     "CREATE INDEX IF NOT EXISTS harel_transport_groups_by_last_claimed ON harel_transport_groups (last_claimed_at)",
     "CREATE INDEX IF NOT EXISTS harel_transport_messages_by_group ON harel_transport_messages (group_id, seq)",
@@ -38,7 +40,8 @@ SQLITE_TRANSPORT = (
 )
 
 POSTGRES_TRANSPORT = (
-    "CREATE TABLE IF NOT EXISTS harel_transport_messages (seq BIGSERIAL PRIMARY KEY, group_id TEXT NOT NULL, event TEXT NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS harel_transport_messages (seq BIGSERIAL PRIMARY KEY, group_id TEXT NOT NULL, event TEXT NOT NULL, published_at DOUBLE PRECISION)",
+    "ALTER TABLE harel_transport_messages ADD COLUMN IF NOT EXISTS published_at DOUBLE PRECISION",
     "CREATE INDEX IF NOT EXISTS harel_transport_messages_by_group ON harel_transport_messages (group_id, seq)",
     "CREATE TABLE IF NOT EXISTS harel_transport_groups (group_id TEXT PRIMARY KEY, locked_by TEXT, lock_expiry DOUBLE PRECISION, priority INT NOT NULL DEFAULT 0, routing_key TEXT)",
     "ALTER TABLE harel_transport_groups ADD COLUMN IF NOT EXISTS routing_key TEXT",

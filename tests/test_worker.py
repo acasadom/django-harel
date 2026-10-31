@@ -238,3 +238,68 @@ def test_the_worker_refuses_a_machine_changed_without_a_new_version(monkeypatch)
 
     with pytest.raises(CommandError, match="order"):
         call_command("harel_worker")
+
+
+def test_the_loop_records_a_heartbeat_and_forgets_it_when_it_stops():
+    from django_harel.store import DjangoStore
+
+    runner = conf.distributed_runner()
+    store = DjangoStore()
+    seen = []
+
+    class StopWhenIdleSeeingHeartbeats(StopWhenIdle):
+        def fire_due_timers(self) -> int:
+            seen.extend(store.list_workers())
+            return super().fire_due_timers()
+
+    stop = threading.Event()
+    heartbeat = harel_worker.Heartbeat(store, "w", frozenset({"order"}), 10.0, clock=lambda: 50.0)
+    harel_worker.run(
+        StopWhenIdleSeeingHeartbeats(runner.worker(worker_id="w"), stop), stop, 0, heartbeat=heartbeat
+    )
+
+    assert [(w.worker_id, w.machines, w.started_at, w.seen_at, w.heartbeat) for w in seen] == [
+        ("w", ("order",), 50.0, 50.0, 10.0)
+    ]
+    assert store.list_workers() == []  # gone once it stopped
+
+
+def test_a_heartbeat_is_recorded_every_interval():
+    from django_harel.store import DjangoStore
+
+    now = [100.0]
+    heartbeat = harel_worker.Heartbeat(DjangoStore(), "w", None, 10.0, clock=lambda: now[0])
+    heartbeat.beat()
+    now[0] = 105.0
+    heartbeat.beat()  # not due yet
+    assert [(w.machines, w.started_at, w.seen_at) for w in DjangoStore().list_workers()] == [
+        (None, 100.0, 100.0)
+    ]
+    now[0] = 110.0
+    heartbeat.beat()
+    assert [(w.started_at, w.seen_at) for w in DjangoStore().list_workers()] == [(100.0, 110.0)]
+
+
+def test_a_failing_heartbeat_does_not_stop_the_worker(caplog):
+    class Down:
+        def record_worker(self, record):
+            raise RuntimeError("the database went away")
+
+        def forget_worker(self, worker_id):
+            raise RuntimeError("the database went away")
+
+    heartbeat = harel_worker.Heartbeat(Down(), "w", None, 10.0)
+    heartbeat.beat()
+    heartbeat.forget()
+    assert "could not record its heartbeat" in caplog.text
+    assert "could not forget its heartbeat" in caplog.text
+
+
+def test_the_command_records_heartbeats_every_heartbeat_setting(monkeypatch, settings):
+    settings.DJANGO_HAREL = {**settings.DJANGO_HAREL, "HEARTBEAT": 3.0}
+    seen = {}
+    monkeypatch.setattr(harel_worker, "run", lambda worker, stop, idle, **kw: seen.update(**kw))
+    call_command("harel_worker", "--worker-id", "w9", "--machines", "order")
+
+    heartbeat = seen["heartbeat"]
+    assert (heartbeat.worker_id, heartbeat.machines, heartbeat.interval) == ("w9", ("order",), 3.0)

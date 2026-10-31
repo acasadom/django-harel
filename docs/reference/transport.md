@@ -38,3 +38,9 @@ A group also carries `routing_key` — the machine its tree started from, set by
 publish that creates the group (a tree's regions, fan-out instances and invoked submachines all
 carry their root's). `manage.py harel_worker --machines` claims use it to restrict a worker to
 some machines' groups; see [the worker reference](worker.md#dedicating-workers-to-machines).
+
+## Backlog
+
+`backlog()` reports the work queued by machine (`routing_key`): the messages waiting, the
+executions they are for, those held by a worker (or parked), and when the oldest was published —
+each message carries its `published_at`. harel's monitor shows it in its queue view.

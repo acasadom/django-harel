@@ -21,7 +21,7 @@ import uuid
 from typing import Any, Callable, Optional
 
 from django.db import DEFAULT_DB_ALIAS, OperationalError, connections, transaction
-from harel.engine.transport.base import PARKED, Lease
+from harel.engine.transport.base import PARKED, Backlog, Lease, MachineBacklog
 from harel.spec.states import Event
 
 from django_harel.schema import QUEUE_LOG, check_vendor
@@ -43,6 +43,17 @@ _SQLITE_CLAIM = (
     f"  AND x.locked_by IS NOT NULL AND x.lock_expiry >= %s"
     f") ORDER BY g.last_claimed_at, g.rowid LIMIT 1"
 )
+
+
+# the work queued, by machine — harel's own `backlog` queries: a group is held while its next
+# message is leased (SQLite: on the message row; PostgreSQL, MySQL: on the group row) or parked
+_BACKLOG = (
+    "SELECT g.routing_key, COUNT(m.seq), COUNT(DISTINCT m.group_id), "
+    "COUNT(DISTINCT CASE WHEN {held} THEN m.group_id END), MIN(m.published_at) "
+    f"FROM {MESSAGES} m JOIN {GROUPS} g ON g.group_id = m.group_id GROUP BY g.routing_key"
+)
+_HELD_SQLITE = "m.locked_by IS NOT NULL AND m.lock_expiry >= %s"
+_HELD_GROUP_LOCK = "g.locked_by IS NOT NULL AND g.lock_expiry >= %s"
 
 
 def _routing_filter(routing_keys: Optional[frozenset[str]], column: str) -> tuple[str, list]:
@@ -98,13 +109,14 @@ class DjangoTransport:
             return cur.fetchone()
 
     def _insert_message(self, group_id: str, payload: str) -> int:
-        """Insert a queued message; return its `seq`."""
-        sql = f"INSERT INTO {MESSAGES} (group_id, event) VALUES (%s, %s)"
+        """Insert a queued message, stamped with when it was published; return its `seq`."""
+        sql = f"INSERT INTO {MESSAGES} (group_id, event, published_at) VALUES (%s, %s, %s)"
+        params = [group_id, payload, self._clock()]
         with self._connection.cursor() as cur:
             if self._connection.features.can_return_columns_from_insert:
-                cur.execute(f"{sql} RETURNING seq", [group_id, payload])
+                cur.execute(f"{sql} RETURNING seq", params)
                 return cur.fetchone()[0]
-            cur.execute(sql, [group_id, payload])
+            cur.execute(sql, params)
             return cur.lastrowid
 
     def _log_published(self, seq: int) -> None:
@@ -231,6 +243,26 @@ class DjangoTransport:
                 f"UPDATE {GROUPS} SET locked_by = NULL, lock_expiry = NULL WHERE group_id = %s AND locked_by = %s",
                 [lease.group_id, lease.token],
             )
+
+    def backlog(self) -> Backlog:
+        """The work queued, by machine (`routing_key`): the messages waiting, the executions
+        they are for, those held, and when the oldest was published — for harel's monitor."""
+        held = _HELD_SQLITE if self._vendor == "sqlite" else _HELD_GROUP_LOCK
+        with self._connection.cursor() as cur:
+            cur.execute(_BACKLOG.format(held=held), [self._clock()])
+            rows = cur.fetchall()
+        machines = [
+            MachineBacklog(
+                key,
+                int(messages),
+                int(executions),
+                int(held_groups),
+                float(oldest) if oldest is not None else None,
+            )
+            for key, messages, executions, held_groups, oldest in rows
+        ]
+        # by machine name, the messages published without one last — as harel's own transports
+        return Backlog(machines=sorted(machines, key=lambda b: (b.routing_key is None, b.routing_key or "")))
 
     def close(self) -> None:
         """Nothing to release: Django owns the connection."""

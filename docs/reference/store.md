@@ -35,12 +35,17 @@ The rest of the interface is harel's `ExecutionStore` protocol, which the runner
 
 ## Schema
 
-The tables are harel's schema version 5 (`harel.engine.schema`), created by django-harel's
+The tables are harel's schema version 6 (`harel.engine.schema`), created by django-harel's
 migrations. On SQLite and PostgreSQL they are the very tables harel's `SqliteStore` and
 `PostgresStore` use (`create_schema=False`). On MySQL they keep the same columns, with
 `VARCHAR` keys and a binary collation so ids are case-sensitive.
 
 `publish_definition`/`load_definition` store and read published machine versions
-(`harel_definitions`) — a machine declared `machine name version N { ... }`. django-harel
-doesn't publish any itself; it's here so a store that does (harel's own `harel publish`, or
-your own code calling it directly) and `DjangoStore` agree on where they live.
+(`harel_definitions`) — a machine declared `machine name version N { ... }`. `manage.py
+harel_worker` publishes `DJANGO_HAREL['MACHINES']` at startup, and harel's own `harel publish`
+writes the same table.
+
+`record_worker`/`list_workers`/`forget_worker` keep the workers' heartbeats (`harel_workers`),
+which `manage.py harel_worker` records every `DJANGO_HAREL['HEARTBEAT']` seconds, and
+`pending_work(execution_id)` returns what is waiting for one execution — its timers, the outbox
+entries addressed to it, the children it is about to create. harel's monitor reads both.

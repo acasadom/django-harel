@@ -33,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
     "SUSPEND_RECHECK": 5.0,
     "IDLE_SLEEP": 0.2,
     "ATOMIC_STEP": True,
+    "HEARTBEAT": 10.0,
     # the admin draws machines with Mermaid: this script, or your own static copy of it
     "MERMAID_JS": "https://cdn.jsdelivr.net/npm/mermaid@11.15.0/dist/mermaid.min.js",
 }

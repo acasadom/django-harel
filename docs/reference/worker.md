@@ -15,6 +15,7 @@ there is nothing else to do. Stops on SIGTERM or SIGINT after the event in hand.
 | `--machines` | — | every machine | comma-separated machines: claim only the work of the executions started from them |
 | — | `SUSPEND_RECHECK` | `5` | seconds before an event for a suspended execution is looked at again |
 | — | `ATOMIC_STEP` | `True` | run each event in one transaction |
+| — | `HEARTBEAT` | `10` | seconds between the heartbeats it records |
 
 ## Machine versions, published at startup
 
@@ -24,6 +25,15 @@ Before it claims anything, the worker publishes the version of every machine in
 never starts), instead of an execution meeting a machine whose source no longer matches what it
 started on. Publishing the same version again, unchanged, is a no-op — safe on every restart,
 and across however many worker processes start at once.
+
+## Heartbeats
+
+While it runs, the worker records a heartbeat in `harel_workers` every `HEARTBEAT` seconds —
+its id, its `--machines` (none: every machine), when it started and when it was last seen — and
+removes it when it stops, as a native harel worker does. harel's monitor reads them to show
+which workers are alive and which machines have work waiting with no live worker to claim it.
+A heartbeat is written outside the event's transaction, and one that fails is logged and tried
+again an interval later: the worker carries on without it.
 
 ## Each event is a transaction
 

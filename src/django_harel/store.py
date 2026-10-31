@@ -19,10 +19,12 @@ from harel.engine.store.base import (
     DEFAULT_TRACE_MAX,
     DefinitionRecord,
     OutboxEntry,
+    PendingWork,
     SpawnEntry,
     Step,
     StoreConflict,
     TimerOp,
+    WorkerRecord,
     decode_offset,
     like_prefix,
     listing_page,
@@ -32,7 +34,15 @@ from harel.spec.states import Event
 from django_harel.schema import check_vendor
 
 # the summary fields `list_executions` reads out of the Execution JSON, in `listing_page` order
-_SUMMARY_FIELDS = ("status", "outcome", "active_path", "parent_id", "finished_at")
+_SUMMARY_FIELDS = (
+    "status",
+    "outcome",
+    "active_path",
+    "parent_id",
+    "finished_at",
+    "definition_version",
+    "updated_at",
+)
 
 
 def json_field(vendor: str, field: str) -> str:
@@ -44,6 +54,10 @@ def json_field(vendor: str, field: str) -> str:
     # MySQL/MariaDB: JSON_UNQUOTE turns a JSON null into the string 'null'
     value = f"JSON_EXTRACT(data, '$.{field}')"
     return f"(CASE WHEN JSON_TYPE({value}) = 'NULL' THEN NULL ELSE JSON_UNQUOTE({value}) END)"
+
+
+def _number(value: Any, kind: type) -> Any:
+    return kind(value) if value is not None else None
 
 
 class DjangoStore:
@@ -289,8 +303,8 @@ class DjangoStore:
             f"WHERE {' AND '.join(where)} ORDER BY id LIMIT %s OFFSET %s",
             [*params, limit + 1, off],
         )
-        # finished_at comes out as text from the JSON on some vendors
-        rows = [(*r[:7], float(r[7]) if r[7] is not None else None) for r in rows]
+        # the numbers come out as text from the JSON on some vendors
+        rows = [(*r[:7], _number(r[7], float), _number(r[8], int), _number(r[9], float)) for r in rows]
         return listing_page(rows, limit, off)
 
     def ids_with_prefix(self, prefix: str) -> list[str]:
@@ -374,6 +388,53 @@ class DjangoStore:
             [execution_id, path, fire_at],
         )
 
+    def pending_work(self, execution_id: str) -> PendingWork:
+        """What is waiting for `execution_id`: its armed timers, the outbox entries addressed to
+        it and the child spawns it issued — read by its id, for the admin and harel's monitor."""
+        timers = self._fetchall(
+            "SELECT path, fire_at FROM harel_timers WHERE execution_id = %s ORDER BY fire_at, path",
+            [execution_id],
+        )
+        outbox = self._fetchall(
+            "SELECT seq, target_id, event FROM harel_outbox WHERE target_id = %s ORDER BY seq", [execution_id]
+        )
+        spawns = self._fetchall(
+            "SELECT seq, parent_id, child_id, root_path, context FROM harel_spawns "
+            "WHERE parent_id = %s ORDER BY seq",
+            [execution_id],
+        )
+        return PendingWork(
+            timers=[(path, float(fire_at)) for path, fire_at in timers],
+            outbox=[OutboxEntry(seq, tid, Event.model_validate_json(event)) for seq, tid, event in outbox],
+            spawns=[SpawnEntry(seq, pid, cid, rp, json.loads(ctx)) for seq, pid, cid, rp, ctx in spawns],
+        )
+
+    # --- the workers' heartbeats ---------------------------------------------------------------
+    def record_worker(self, record: WorkerRecord) -> None:
+        """Store `record`, replacing the worker's previous heartbeat."""
+        vendor = self._vendor
+        if vendor == "mysql":
+            sql = (
+                "INSERT INTO harel_workers (worker_id, record) VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE record = VALUES(record)"
+            )
+        else:
+            sql = (
+                "INSERT INTO harel_workers (worker_id, record) VALUES (%s, %s) "
+                "ON CONFLICT (worker_id) DO UPDATE SET record = excluded.record"
+            )
+        with self._atomic():
+            self._execute(sql, [record.worker_id, record.to_json()])
+
+    def list_workers(self) -> list[WorkerRecord]:
+        rows = self._fetchall("SELECT record FROM harel_workers ORDER BY worker_id")
+        return [WorkerRecord.from_json(r[0]) for r in rows]
+
+    def forget_worker(self, worker_id: str) -> None:
+        with self._atomic():
+            self._execute("DELETE FROM harel_workers WHERE worker_id = %s", [worker_id])
+
+    # --- published machine versions ------------------------------------------------------------
     def publish_definition(self, record: DefinitionRecord) -> DefinitionRecord:
         """Store `record` unless a machine version with its `definition_id` and `version` is
         stored already — a version is stored once. Returns what is stored: `record`, or the one
