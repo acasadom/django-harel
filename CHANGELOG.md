@@ -4,7 +4,7 @@ All notable changes to django-harel. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/) (pre-1.0: a minor version may break the API).
 
-## Unreleased
+## 0.1.0 - 2026-10-31
 
 The first release. It requires Python 3.11+, Django 5.2+ and harel 0.10+.
 
