@@ -3,13 +3,15 @@
 *Django integration for harel statecharts — a Celery alternative for state-machine-shaped work.*
 
 [![CI](https://github.com/acasadom/django-harel/actions/workflows/ci.yml/badge.svg)](https://github.com/acasadom/django-harel/actions/workflows/ci.yml)
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/acasadom/django-harel/blob/main/LICENSE)
 ![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)
 
 **django-harel** runs [harel](https://github.com/acasadom/harel) statecharts on Django's
 database. You write a process as a `.stm` machine and its actions as plain functions that use
 the ORM. Its state, its queue and its timers are rows in your database, next to your models.
 It works with SQLite, PostgreSQL and MySQL, and needs no other infrastructure.
+
+Requires Python 3.11+, Django 5.2+ and harel 0.10+. Alpha: the API may still change.
 
 ```
 event Submit  {}
@@ -97,17 +99,25 @@ order.checkout.process("Pay", token=token)  # in the request: runs now, in this 
 `ExecutionField` ties a machine to a model; the runners underneath (`distributed_runner()`,
 `durable_runner()`) work for executions that don't belong to a row.
 
-The Django admin's **Machines** catalog lists every machine — its diagram, what it invokes, and
-its top-level executions (an order, say — not the regions and invoked children inside it, which
-show nested in that execution's own tree) — and flags a queue nothing is draining or a timer
-nothing is firing. From an execution's page you can suspend, resume, cancel, terminate or purge
-it. Signals (`step_committed`, `execution_finished`, `execution_failed`) tell your code about
-every committed step — only once its transaction has committed.
+The Django admin's **Machines** catalog lists every machine: its diagram, what it invokes, its
+top-level executions, and their counts by status. It also shows the queue by machine and every
+worker's heartbeat. It flags work no live worker claims, a timer nothing is firing, and a worker
+that is gone. From the executions list you can suspend, resume, cancel, terminate, redrive or
+purge them.
+
+Signals (`step_committed`, `execution_finished`, `execution_failed`) tell your code about every
+step, once its transaction has committed.
 
 ## Example
 
-[`example/`](example/) is an article publishing app with a REST API (django-ninja) and a
-worker. See [`example/README.md`](example/README.md).
+[`example/`](https://github.com/acasadom/django-harel/tree/main/example) is a Django app with
+a REST API (django-ninja) and a worker, on PostgreSQL with `docker compose up`. It has two machines:
+
+- **articles**: the publishing workflow above, the one the tutorial builds.
+- **orders**: shipping and billing in parallel regions, one parcel per item (a fan-out),
+  payment timers, and a refused card to redrive from the admin.
+
+See [`example/README.md`](https://github.com/acasadom/django-harel/blob/main/example/README.md).
 
 ## Documentation
 

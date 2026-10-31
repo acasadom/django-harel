@@ -3,15 +3,13 @@
 #     docker compose up
 #
 # then http://localhost:8000/admin/ (admin / admin) and http://localhost:8000/api/docs.
-# The repository and the harel checkout next to it (HAREL_PATH, default ../../harel) are
-# mounted: a change to either shows on the next request — restart `worker` to reload it.
+# The repository is mounted: a change shows on the next request — restart `worker` to reload it.
 
 x-app: &app
   build: .
   entrypoint: ["/app/django-harel/example/entrypoint.sh"]
   volumes:
     - ..:/app/django-harel
-    - ${HAREL_PATH:-../../harel}:/app/harel
     - uv-cache:/root/.cache/uv
     - venv:/opt/venv
   environment:

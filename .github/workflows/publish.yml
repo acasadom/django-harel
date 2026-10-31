@@ -16,8 +16,7 @@ jobs:
         with:
           python-version: "3.13"
           enable-cache: true
-      # build what PyPI gets: harel from its requirement, not the ../harel checkout used to develop
-      - run: uv build --no-sources
+      - run: uv build
       - uses: actions/upload-artifact@v4
         with:
           name: dist

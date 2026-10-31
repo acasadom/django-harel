@@ -55,6 +55,9 @@ source = "vcs"
 [tool.hatch.build.targets.wheel]
 packages = ["src/django_harel"]
 
+[tool.hatch.build.targets.sdist]
+include = ["/src/django_harel", "/tests", "/README.md", "/CHANGELOG.md", "/LICENSE", "/pyproject.toml"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
@@ -79,8 +82,3 @@ check_untyped_defs = true
 
 [tool.django-stubs]
 django_settings_module = "tests.settings"
-
-[tool.uv.sources]
-# develop against the harel checkout next to this one (editable): a fix there is seen here at
-# once. Published metadata still says harel>=0.10.0; CI checks harel out at ../harel.
-harel = { path = "../harel", editable = true }

@@ -178,14 +178,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "django", specifier = ">=5.2" },
-    { name = "harel", editable = "../harel" },
+    { name = "harel", specifier = ">=0.10.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "django-ninja" },
     { name = "django-stubs" },
-    { name = "harel", extras = ["lsp"], editable = "../harel" },
+    { name = "harel", extras = ["lsp"], specifier = ">=0.10.0" },
     { name = "mypy" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.6" },
     { name = "pymysql", specifier = ">=1.2.3" },
@@ -240,7 +240,8 @@ wheels = [
 
 [[package]]
 name = "harel"
-source = { editable = "../harel" }
+version = "0.10.0"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiosqlite" },
     { name = "anyio" },
@@ -248,60 +249,14 @@ dependencies = [
     { name = "pydantic" },
     { name = "structlog" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/81/46/06dd5d9bbc0020acd2cb0efb478cf3f5879d29a7778630a9bd28b80d6ee9/harel-0.10.0.tar.gz", hash = "sha256:35958373619daf391fe63ebfda7e3afd89c8f156f47916f3a0563c109ae1d28e", size = 1768247, upload-time = "2026-10-30T22:01:29.876Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b9/2b/b798d4e71ac6ec4869b53d18b61378053893c471e3a368ef2f74e9f8655b/harel-0.10.0-py3-none-any.whl", hash = "sha256:5869b4f8d5c1d17c60b8ef107c64a348dfc9a2384a583e7064ae2548af8295fe", size = 354157, upload-time = "2026-10-30T22:01:27.961Z" },
+]
 
 [package.optional-dependencies]
 lsp = [
     { name = "pygls" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aioboto3", marker = "extra == 'dynamodb'", specifier = ">=12" },
-    { name = "aioboto3", marker = "extra == 'sqs'", specifier = ">=12" },
-    { name = "aiosqlite", specifier = ">=0.20" },
-    { name = "anyio", specifier = ">=4,<5" },
-    { name = "boto3", marker = "extra == 'dynamodb'", specifier = ">=1.26" },
-    { name = "boto3", marker = "extra == 'faas'", specifier = ">=1.26" },
-    { name = "boto3", marker = "extra == 'sqs'", specifier = ">=1.26" },
-    { name = "httpx", marker = "extra == 'rqlite'", specifier = ">=0.27" },
-    { name = "lark", specifier = ">=1.2,<2" },
-    { name = "libsql", marker = "extra == 'libsql'", specifier = ">=0.1" },
-    { name = "motor", marker = "extra == 'mongo'", specifier = ">=3,<4" },
-    { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3,<4" },
-    { name = "psycopg-pool", marker = "extra == 'postgres'", specifier = ">=3,<4" },
-    { name = "pydantic", specifier = ">=2,<3" },
-    { name = "pygls", marker = "extra == 'lsp'", specifier = ">=1.3,<2" },
-    { name = "pymongo", marker = "extra == 'mongo'", specifier = ">=4,<5" },
-    { name = "redis", marker = "extra == 'redis'", specifier = ">=5,<9" },
-    { name = "requests", marker = "extra == 'faas'", specifier = ">=2,<3" },
-    { name = "requests", marker = "extra == 'rqlite'", specifier = ">=2,<3" },
-    { name = "structlog" },
-    { name = "textual", marker = "extra == 'tui'", specifier = ">=0.60" },
-]
-provides-extras = ["dynamodb", "faas", "libsql", "lsp", "mongo", "postgres", "redis", "rqlite", "sqs", "tui"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "aioboto3", specifier = ">=12" },
-    { name = "aiomoto", specifier = ">=0.5" },
-    { name = "fakeredis", specifier = ">=2.36.0" },
-    { name = "furo" },
-    { name = "httpx", specifier = ">=0.27" },
-    { name = "lupa", specifier = ">=2" },
-    { name = "mongomock", specifier = ">=4.1" },
-    { name = "moto", specifier = ">=5.2.1" },
-    { name = "motor", specifier = ">=3,<4" },
-    { name = "mypy" },
-    { name = "myst-parser" },
-    { name = "psycopg-pool", specifier = ">=3,<4" },
-    { name = "pygls", specifier = ">=1.3,<2" },
-    { name = "pymongo", specifier = ">=4,<5" },
-    { name = "pytest" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
-    { name = "ruff" },
-    { name = "sphinx" },
-    { name = "sphinxcontrib-mermaid" },
-    { name = "textual", specifier = ">=0.60" },
 ]
 
 [[package]]

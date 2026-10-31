@@ -30,8 +30,7 @@ That starts PostgreSQL, the web app and a worker, migrates, creates the user `ad
 - **http://localhost:8000/admin/** — *Harel Statecharts › Machines* and *Executions*
 - **http://localhost:8000/api/docs** — the API, to try it from the browser
 
-The repository is mounted into the containers, and so is the harel checkout next to it
-(`../../harel`, or set `HAREL_PATH`): edit either and reload the page; restart the worker
+The repository is mounted into the containers: edit it and reload the page; restart the worker
 (`docker compose restart worker`) to have it pick the change up. `docker compose down -v`
 throws the database away.
 

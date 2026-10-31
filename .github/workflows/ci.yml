@@ -13,10 +13,6 @@ concurrency:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: django-harel
-
 jobs:
   lint:
     name: lint + type-check
@@ -24,18 +20,11 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: django-harel
-      # harel is developed alongside: pyproject's [tool.uv.sources] reads it from ../harel
-      - uses: actions/checkout@v4
-        with:
-          repository: acasadom/harel
-          path: harel
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
           enable-cache: true
-          cache-dependency-glob: django-harel/uv.lock
+          cache-dependency-glob: uv.lock
       - run: uv sync
       - name: Lint (ruff)
         run: make lint
@@ -81,18 +70,11 @@ jobs:
       HAREL_TEST_MYSQL: "127.0.0.1:3306:root:harel:harel"
     steps:
       - uses: actions/checkout@v4
-        with:
-          path: django-harel
-      # harel is developed alongside: pyproject's [tool.uv.sources] reads it from ../harel
-      - uses: actions/checkout@v4
-        with:
-          repository: acasadom/harel
-          path: harel
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-          cache-dependency-glob: django-harel/uv.lock
+          cache-dependency-glob: uv.lock
       - run: uv sync
       - name: Pin Django to the matrix version
         if: matrix.django-version != ''

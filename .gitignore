@@ -10,3 +10,4 @@ docs/_build/
 .ruff_cache/
 .mypy_cache/
 bench/logs/
+.vscode/
